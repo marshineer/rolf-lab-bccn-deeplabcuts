@@ -1,7 +1,7 @@
 import cv2
 import time
 from typing import NamedTuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -33,42 +33,43 @@ HAND_LANDMARK_CONNECTIONS = mp.hands.HAND_CONNECTIONS
 
 # Data processing constants
 REFERENCE_TAG_ID = 40
-HIGH_THRESHOLD = 200
-APRILTAG_THRESHOLD = 50
-EVENT_THRESHOLD = 80
 
 
 @dataclass()
 class PipelineConfig:
     participant_id: int
     session_id: str
-    tracked_hand_landmarks: dict[str, int]
+    diode_suffix: str
+    video_suffix: str
     save_video: bool
     show_video: bool
     visual_plot_check: bool
-    apriltag_kwargs: dict = field(default_factory=dict)
-    mediapipe_kwargs: dict = field(default_factory=dict)
-    max_hands: int = 2
+    apriltag_threshold: int
+    event_threshold: int
+    block_threshold: int | None
+    tracked_hand_landmarks: dict[str, int]
+    apriltag_kwargs: dict
+    mediapipe_kwargs: dict
 
 
 class SessionData:
     """This class stores all the data processed by the pipeline.
 
     Attributes
-        self.participant_id: int = participant_id
-        self.session_id: int = session_id
-        self.n_frames: int = video_time.size
-        self.tracked_landmark_ids: list[int] = list(tracked_landmarks.values())
-        self.tracked_landmark_names: list[str] = list(tracked_landmarks.keys())
-        self.video_time: np.ndarray = video_time
-        self.block_inds: list[tuple[int, int]] = []
-        self.block_times: list[np.ndarray] = []
-        self.apriltag123_visible: list[np.ndarray] = []
-        self.last_apriltag_frame: list[int] = []
-        self.hand_landmark_pos: list[dict[int, np.ndarray]] = []
-        self.reference_pos: list[dict[int, np.ndarray]] = []
-        self.diode_df_blocks: list[pd.DataFrame] = diode_df_blocks
-        self.event_onsets_blocks: list[np.ndarray] = event_onsets
+        participant_id (int): unique participant identifier
+        session_id (int): session identifier
+        n_frames (int): number of frames in the video
+        tracked_landmark_ids (list[int]): IDs of the tracked hand landmarks
+        tracked_landmark_names (list[str]): names of the tracked hand landmarks
+        video_time (np.ndarray): video frame timestamps for the full-length video
+        block_frames (list[tuple[int, int]]): first and last frames of each block
+        block_times (list[np.ndarray]): video frame timestamps for each block
+        apriltag123_visible (list[np.ndarray]): array indicating in which frames AprilTags are visible on the phone
+        last_apriltag_frame (list[int]): last video frome of the five AprilTag set, used to trim hand position data
+        hand_landmark_pos (list[dict[int, np.ndarray]]): position data of the hand landmarks
+        reference_pos (list[dict[int, np.ndarray]]): position data of the apparatus AprilTags, used as hand reference
+        diode_df_blocks (list[pd.DataFrame]): light diode sensor data, collected from the phone screen
+        event_onsets (list[np.ndarray]): event onset times for each block
     """
     def __init__(
             self,
@@ -92,7 +93,7 @@ class SessionData:
         self.video_time: np.ndarray = video_time
 
         # Block specific data
-        self.block_inds: list[tuple[int, int]] = []
+        self.block_frames: list[tuple[int, int]] = []
         self.block_times: list[np.ndarray] = []
         self.block_durations: list[float] = block_durations
         self.apriltag123_visible: list[np.ndarray] = []
@@ -203,6 +204,9 @@ class VideoProcessingPipeline:
     Attributes
         participant_id (int): unique participant identifier
         session_id (int): session identifier
+        block_threshold (int): light diode threshold for signalling a new block
+        apriltag_threshold (int): light diode threshold for signalling the presence of an AprilTag
+        event_threshold (int): light diode threshold for signalling event onsets
         save_video (bool): whether to save the video data as individual blocks
         show_video (bool): whether to stream the video during processing
         show_plots (bool): whether to display plots as visual checks on the process
@@ -226,7 +230,10 @@ class VideoProcessingPipeline:
         Parameters
             config (PipelineConfig)
                 participant_id (int): unique participant identifier
-                session_id (int): session identifier
+                session_id (str): session identifier
+                block_threshold (int): light diode threshold for signalling a new block
+                apriltag_threshold (int): light diode threshold for signalling the presence of an AprilTag
+                event_threshold (int): light diode threshold for signalling event onsets
                 tracked_hand_landmarks (list[int]): all mediapipe hand landmark indices to be tracked
                 save_video (bool): whether to save the video data as individual blocks
                 show_video (bool): whether to stream the video during processing
@@ -239,13 +246,16 @@ class VideoProcessingPipeline:
         # Processing parameters
         self.participant_id: int = config.participant_id
         self.session_id: str = config.session_id
+        # self.block_threshold: int | None = config.block_threshold
+        # self.apriltag_threshold: int = config.apriltag_threshold
+        # self.event_threshold: int = config.event_threshold
         self.save_video: bool = config.save_video
         self.show_video: bool = config.show_video
         self.show_plots: bool = config.visual_plot_check
 
         # Initialize a video capture object and store its parameters
-        video_path = f"data/participants/P{config.participant_id}/{config.session_id}/" \
-                     f"P{config.participant_id}_{config.session_id}.mp4"
+        video_path = f"data/participants/P{config.participant_id:02}/{config.session_id}/" \
+                     f"P{config.participant_id:02}_{config.session_id}{config.video_suffix}.mp4"
         video_capture = cv2.VideoCapture(video_path)
         self.video_capture: cv2.VideoCapture = video_capture
         self.pixel_width: int = int(video_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -255,15 +265,22 @@ class VideoProcessingPipeline:
         self.n_frames: int = int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
 
         # Split the diode data into blocks
-        diode_df = preprocess_diode_data(config.participant_id, config.session_id)
-        self.diode_df_blocks: list[pd.DataFrame] = separate_diode_blocks(diode_df, HIGH_THRESHOLD, APRILTAG_THRESHOLD)
-        event_onset_times, block_duration_times = get_event_times(self.diode_df_blocks, EVENT_THRESHOLD)
+        diode_df = preprocess_diode_data(config.participant_id, config.session_id, config.diode_suffix)
+        self.diode_df_blocks: list[pd.DataFrame] = separate_diode_blocks(
+                                                        diode_df,
+                                                        config.apriltag_threshold,
+                                                        config.block_threshold,
+                                                    )
+        event_onset_times, block_duration_times = get_event_times(self.diode_df_blocks, config.event_threshold)
         self.event_onsets: list[np.ndarray] = event_onset_times
         self.block_durations: list[float] = block_duration_times
 
         # Preprocess the gaze data
-        video_time = preprocess_gaze_data(config.participant_id, config.session_id, config.visual_plot_check)
-        self.video_time: np.ndarray = video_time
+        self.video_time: np.ndarray = preprocess_gaze_data(
+                                        config.participant_id,
+                                        config.session_id,
+                                        config.visual_plot_check
+                                    )
 
         # AprilTag detection variables
         # self.apriltag_detector: Detector = Detector()
@@ -271,7 +288,7 @@ class VideoProcessingPipeline:
 
         # Hand tracking variables
         self.tracked_landmarks: dict[str, int] = config.tracked_hand_landmarks
-        self.hands_model: mp.hands.Hands = mp.hands.Hands(max_num_hands=config.max_hands, **config.mediapipe_kwargs)
+        self.hands_model: mp.hands.Hands = mp.hands.Hands(**config.mediapipe_kwargs)
 
     def iterate_video_frames(self) -> SessionData:
         """Stores hand positions for all video frames, and writes block videos with markers.
@@ -307,9 +324,9 @@ class VideoProcessingPipeline:
             elif not ret:
                 print("Can't receive frame (stream end?). Exiting ...")
                 break
-            # if video_frame_cnt % 6000 == 0 and video_frame_cnt > 0:
-            #     print(f"Current frame: {video_frame_cnt}/{self.n_frames}, runtime: {time.time() - run_time_t0:0.2f}")
-            #     break
+            if video_frame_cnt % 6000 == 0 and video_frame_cnt > 0:
+                print(f"Current frame: {video_frame_cnt}/{self.n_frames}, runtime: {time.time() - run_time_t0:0.2f}")
+                break
             # if video_frame_cnt >= 3:
             #     break
 
@@ -356,14 +373,11 @@ class VideoProcessingPipeline:
 
                 if self.save_video:
                     # Write blocks to new video
-                    # frame_out = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
                     if block_vars.block_id >= 0:
                         block_vars.block_video.write(frame_out)
-                        # pass
 
             if self.show_video:
                 # Stream the frame (as video)
-                # frame_out = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
                 cv2.imshow('frame', frame_out)
                 if cv2.waitKey(1) == ord('q'):
                     break
@@ -467,7 +481,7 @@ class VideoProcessingPipeline:
         block_duration = session_data.block_durations[block_vars.block_id]
         block_end_time = session_data.video_time[block_vars.frame_0] + block_duration
         block_vars.frame_1 = np.where(session_data.video_time > block_end_time)[0][0] - 1
-        session_data.block_inds.append((block_vars.frame_0, block_vars.frame_1))
+        session_data.block_frames.append((block_vars.frame_0, block_vars.frame_1))
         print(f"First and last block frames are {block_vars.frame_0} and {block_vars.frame_1}")
 
         # Block time series
@@ -483,7 +497,7 @@ class VideoProcessingPipeline:
 
         # OpenCV video writer, used to create block videos
         block_vars.block_video = cv2.VideoWriter(
-            f'data/participants/P{session_data.participant_id}/{session_data.session_id}/block_videos/'
+            f'data/participants/P{session_data.participant_id:02}/{session_data.session_id}/block_videos/'
             f'block{block_vars.block_id}.mp4',
             self.fourcc_codec,
             self.fps,

@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 
 
-def preprocess_diode_data(participant_id: int, session_id: str) -> pd.DataFrame:
+def preprocess_diode_data(participant_id: int, session_id: str, diode_suffix: str) -> pd.DataFrame:
     """Preprocesses the light diode sensor data.
 
     Parameters
@@ -14,7 +14,8 @@ def preprocess_diode_data(participant_id: int, session_id: str) -> pd.DataFrame:
         diode_df (pd.DataFrame): processed diode data
     """
 
-    diode_path = f"data/participants/P{participant_id}/{session_id}/{participant_id}_{session_id}_01_light.csv"
+    diode_path = f"data/participants/P{participant_id:02}/{session_id}/" \
+                 f"{participant_id:02}_{session_id}_{diode_suffix}_light.csv"
     diode_df = pd.read_csv(diode_path, usecols=[' timestamp', ' light_value'])
     diode_df.columns = ['time', 'light_value']
     diode_df.time = diode_df.time - diode_df.time.iloc[0]
@@ -36,7 +37,7 @@ def preprocess_gaze_data(participant_id: int, session_id: str, plot_result: bool
         (np.ndarray): video frame timestamp array
     """
 
-    gaze_path = f"data/participants/P{participant_id}/{session_id}/gaze_positions_on_surface_Phone.csv"
+    gaze_path = f"data/participants/P{participant_id:02}/{session_id}/gaze_positions_on_surface_Phone.csv"
     gaze_df = pd.read_csv(gaze_path, usecols=['world_timestamp', 'world_index'])
     gaze_df.columns = ['time', 'video_frame']
     gaze_df = gaze_df.drop_duplicates('video_frame').reset_index(drop=True)
@@ -119,8 +120,8 @@ def add_missing_gaze_rows(gaze_data: pd.DataFrame, plot_result: bool) -> pd.Data
 
 def separate_diode_blocks(
         diode_df: pd.DataFrame,
-        new_block_threshold: int,
-        apriltag_threshold: int
+        apriltag_threshold: int,
+        new_block_threshold: int = None,
 ) -> list[pd.DataFrame]:
     """Separates the diode data into experimental blocks.
 
@@ -137,8 +138,8 @@ def separate_diode_blocks(
 
     Parameters
         diode_df (pd.DataFrame): raw light diode data
-        new_block_threshold (int): light diode threshold for signalling a new block
         apriltag_threshold (int): light diode threshold for signalling the presence of an AprilTag
+        new_block_threshold (int): light diode threshold for signalling a new block
 
     Returns
         block_list (list[pd.DataFrame]): light diode data separated into individual blocks
@@ -146,22 +147,53 @@ def separate_diode_blocks(
 
     # Find light diode values that indicate a new block begins
     light_values = diode_df.light_value.to_numpy('int', copy=True)
-    new_block_crossings = np.where(np.diff(light_values > new_block_threshold))[0] + 1
+    # TODO: there are 4 potential types of conditions to handle
+    #  1. High values exist and everything is good (eg. P17-A1)
+    #  2. High values exist but can only be used for block end times (eg. P05-A2)
+    #      -> Must use AprilTag sets to identify block starts
+    #  3. High values exist but can only be used for block start times/first AprilTag identification (eg. none yet)
+    #  4. No high values exist (eg. P02-A1)
+    #      -> Must use AprilTag sets to identify block starts
+    if new_block_threshold is not None:
+        new_block_crossings = np.where(np.diff(light_values > new_block_threshold))[0] + 1
+        # # TODO: need some kind of check in case the light diode starts with a high value
+        # # I think this works
+        # if light_values[0] > self.diode_threshold_new_block:
+        #     new_block_crossings = np.insert(new_block_crossings, 0, 0)
+        # TODO: check if light diode value always goes high at the end of a session (required for step below)
+        cross_down_inds = new_block_crossings[1::2]
+        # block_end_inds = new_block_crossings[2::2]
+        # Find light diode indices where new blocks begin (i.e. onset of first AprilTag)
+        apriltag_event_crossings = np.where(np.diff(light_values > apriltag_threshold))[0] + 1
+        # The line below is a little confusing, but it basically finds the first threshold crossing after the
+        #  downward crossing of a high value threshold. This should be the onset of the first AprilTag in a block.
+        first_apriltag_inds_event_crossings = np.searchsorted(apriltag_event_crossings, cross_down_inds) + 1
+        first_apriltag_inds_time = apriltag_event_crossings[first_apriltag_inds_event_crossings]
+    else:
+        # Find light diode indices where new blocks begin (i.e. onset of first AprilTag)
+        n_apriltag_set = 9
+        all_crossings = np.where(np.diff(light_values > apriltag_threshold))[0] + 1
+        diode_time = diode_df.time.to_numpy('float', copy=True)
+        first_apriltag_inds_time = []
+        # first_event_inds_time = []
+        for ind0, ind1 in zip(all_crossings[:-n_apriltag_set], all_crossings[n_apriltag_set:]):
+            if 9.0 < (diode_time[ind1] - diode_time[ind0]) < 9.2:
+                first_apriltag_inds_time.append(ind0)
+        # for i, ind0 in enumerate(all_crossings[:-n_apriltag_set]):
+        #     ind1 = all_crossings[n_apriltag_set + i]
+        #     ind_event = all_crossings[n_apriltag_set + i + 1]
+        #     if 9.0 < (diode_time[ind1] - diode_time[ind0]) < 9.2:
+        #         first_apriltag_inds_time.append(ind0)
+        #         first_event_inds_time.append(ind_event)
+        #
+        # # Find light diode indices after the last event of the block
+        # block_end_inds = []
+        # for i, ind in enumerate(first_apriltag_inds_time):
+        #     ind1 = first_apriltag_inds_time[i + 1] if i < len(first_apriltag_inds_time) else np.inf
+        #     event_inds = all_crossings[(all_crossings > ind) & (all_crossings < ind1)]
+        #     event_times =
 
-    # # TODO: need some kind of check in case the light diode starts with a high value
-    # # I think this works
-    # if light_values[0] > self.diode_threshold_new_block:
-    #     new_block_crossings = np.insert(new_block_crossings, 0, 0)
-    # TODO: check if light diode value always goes high at the end of a session (required for step below)
-    cross_down_inds = new_block_crossings[1::2]
-    block_end_inds = new_block_crossings[2::2]
-
-    # Find light diode indices where new blocks begin (i.e. onset of first AprilTag)
-    apriltag_event_crossings = np.where(np.diff(light_values > apriltag_threshold))[0] + 1
-    # The line below is a little confusing, but it basically finds the first threshold crossing after the
-    #  downward crossing of a high value threshold. This should be the onset of the first AprilTag in a block.
-    first_apriltag_inds_event_crossings = np.searchsorted(apriltag_event_crossings, cross_down_inds) + 1
-    first_apriltag_inds_time = apriltag_event_crossings[first_apriltag_inds_event_crossings]
+    # print(first_apriltag_inds_time)
 
     # Separate data into blocks
     block_list = []
@@ -175,12 +207,17 @@ def separate_diode_blocks(
         block_time -= block_time[0]
         block.loc[:, 'time'] = block_time
         block.reset_index(drop=True, inplace=True)
-        block_list.append(block.iloc[:, :block_end_inds[i]])
+        # block_list.append(block.iloc[:block_end_inds[i], :])
+        block_list.append(block)
 
     return block_list
 
 
-def get_event_times(block_list: list, event_threshold: int) -> tuple[list[np.ndarray], list[float]]:
+def get_event_times(
+        block_list: list,
+        event_threshold: int,
+        new_block_threshold: int = None,
+) -> tuple[list[np.ndarray], list[float]]:
     """Extracts the event onset times.
 
     These times are used to check the synchronization between the video and diode data.
@@ -188,6 +225,7 @@ def get_event_times(block_list: list, event_threshold: int) -> tuple[list[np.nda
     Parameters
         block_list (list[pd.DataFrame]): light diode data, separated into individual blocks
         event_threshold (int): light diode threshold for signalling event onsets
+        new_block_threshold (int): light diode threshold for signalling a new block
 
     Returns
         event_onsets (list[np.ndarray]): event onset times for each block
@@ -196,6 +234,7 @@ def get_event_times(block_list: list, event_threshold: int) -> tuple[list[np.nda
 
     event_times = []
     block_durations = []
+    first_event_ind = 10
     for i, block in enumerate(block_list):
         # Zero the block time
         block_time = block.time.to_numpy('float', copy=True)
@@ -205,9 +244,17 @@ def get_event_times(block_list: list, event_threshold: int) -> tuple[list[np.nda
         all_event_inds = np.where(np.diff(light_values > event_threshold))[0] + 1
 
         # Get event onset times
-        last_ind = -2 if i < (len(block_list) - 1) else -1
-        event_onset_inds = all_event_inds[10:last_ind:2]
-        event_times.append(block_time[event_onset_inds])
-        block_durations.append(block_time[all_event_inds[last_ind]])
+        if new_block_threshold is not None:
+            last_ind = -2 if i < (len(block_list) - 1) else -1
+            event_onset_inds = all_event_inds[first_event_ind:last_ind:2]
+            event_times.append(block_time[event_onset_inds])
+            block_durations.append(block_time[all_event_inds[last_ind]])
+        else:
+            # TODO: this is a sloppy way to end the block (is there a better way?)
+            #  - at least figure out what number to multiple it by. maybe Clara has some stats.
+            event_onset_inds = all_event_inds[first_event_ind::2]
+            event_times.append(block_time[event_onset_inds])
+            avg_trial_len = np.mean(np.diff(event_times[-1]))
+            block_durations.append(event_times[-1][-1] + 0.7 * avg_trial_len)
 
     return event_times, block_durations
