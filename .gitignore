@@ -161,4 +161,8 @@ cython_debug/
 
 # Project specific files and directories
 data/
+#*.mp4
 outputs/
+project_info/
+old_unused/
+temp*.py
