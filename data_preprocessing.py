@@ -69,7 +69,7 @@ def concatenate_video_data() -> None:
                         break
                     video_frame_cnt += 1
                     new_video.write(frame)
-            print(f"It took {time.time() - run_time_t0:0.2f} seconds to concatenate videos:\n{file_list}")
+            print(f"It took {time.time() - run_time_t0:0.2f} seconds to concatenate videos")
             assert video_frame_cnt == video_frame_reported
         else:
             os.rename(os.path.join(dirpath, file_list[0]), os.path.join(new_dirpath, file_list[0]))
