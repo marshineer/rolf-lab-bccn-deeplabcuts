@@ -7,16 +7,6 @@ from pathlib import Path
 from utils import get_files_containing
 
 
-# def move_marker_files() -> None:
-#     """Moves all the markers files out of the working directories."""
-#
-#     marker_paths, marker_files = get_files_containing("data/original_data/", "marker_detections")
-#     for dirpath, file in zip(marker_paths, marker_files):
-#         participant_id, session_id = dirpath.split("/")[-2:]
-#         new_filename = f"{participant_id}_{session_id}_{file}"
-#         os.rename(os.path.join(dirpath, file), os.path.join("data/old_unused/marker_data", new_filename))
-
-
 def concatenate_video_data() -> None:
     """Concatenates all two part session videos."""
 
@@ -44,7 +34,6 @@ def concatenate_video_data() -> None:
                 gaze_df.time += session_gaze_dfs[-1].time.iloc[-1] + time_diff
                 gaze_df.video_frame += session_gaze_dfs[-1].video_frame.iloc[-1] + 1
             session_gaze_dfs.append(gaze_df)
-            # os.rename(os.path.join(dirpath, file), os.path.join("data/old_unused/original_gaze_data", file))
         combined_gaze_df = pd.concat(session_gaze_dfs, ignore_index=True)
         combined_gaze_df.time.to_csv(os.path.join(new_dirpath, new_filename), index=False)
 
@@ -110,36 +99,8 @@ def preprocess_diode_data() -> None:
                 time_diff = session_diode_dfs[-1].time.diff().median()
                 diode_df.time += session_diode_dfs[-1].time.iloc[-1] + time_diff
             session_diode_dfs.append(diode_df)
-            # os.rename(os.path.join(dirpath, file), os.path.join("data/old_unused/original_diode_data", file))
         combined_diode_df = pd.concat(session_diode_dfs, ignore_index=True)
         combined_diode_df.to_csv(os.path.join(new_dirpath, new_filename), index=False)
-
-    # for (dirpath, dirnames, filenames) in os.walk("data/two_part_videos/"):
-    #     filenames.sort()
-    #     session_diode_files = []
-    #     for file in filenames:
-    #         # Store all light diode data files
-    #         if "light.csv" in file:
-    #             session_diode_files.append(file)
-    #             participant_id, session_id = file.split("_")[:2]
-    #             new_filename = f"{participant_id}_{session_id}_light.csv"
-    #     # If there are multiple light diode files, concatenate them
-    #     if len(session_diode_files) > 1:
-    #         session_diode_dfs = []
-    #         for i, file in enumerate(session_diode_files):
-    #             diode_df = format_diode_df(os.path.join(dirpath, file))
-    #             if i > 0:
-    #                 time_diff = session_diode_dfs[-1].time.diff().median()
-    #                 diode_df.time += session_diode_dfs[-1].time.iloc[-1] + time_diff
-    #             session_diode_dfs.append(diode_df)
-    #         combined_diode_df = pd.concat(session_diode_dfs, ignore_index=True)
-    #         combined_diode_df.to_csv(os.path.join(dirpath, new_filename), index=False)
-    #     # If there is only a single light diode file, reformat it
-    #     elif len(session_diode_files) == 1:
-    #         diode_df = format_diode_df(os.path.join(dirpath, session_diode_files[0]))
-    #         diode_df.to_csv(os.path.join(dirpath, new_filename), index=False)
-    #     for file in session_diode_files:
-    #         os.rename(os.path.join(dirpath, file), os.path.join("data/old_unused/original_diode_data", file))
 
 
 def format_diode_df(diode_path: str) -> pd.DataFrame:
@@ -153,8 +114,6 @@ def format_diode_df(diode_path: str) -> pd.DataFrame:
         diode_df (pd.DataFrame): processed diode data
     """
 
-    # diode_path = f"data/two_part_videos/P{participant_id:02}/{session_id}/" \
-    #              f"{participant_id:02}_{session_id}_{diode_suffix}_light.csv"
     diode_df = pd.read_csv(diode_path, usecols=[' timestamp', ' light_value'])
     diode_df.columns = ['time', 'light_value']
     diode_df.time = diode_df.time - diode_df.time.iloc[0]
@@ -175,7 +134,6 @@ def preprocess_gaze_data(gaze_path: str, plot_result: bool) -> pd.DataFrame:
         gaze_df (pd.DataFrame): gaze positiona and video frame timestamp data
     """
 
-    # gaze_path = f"data/original_data/P{participant_id:02}/{session_id}/gaze_positions_on_surface_Phone.csv"
     gaze_df = pd.read_csv(gaze_path, usecols=['world_timestamp', 'world_index'])
     column_types = {'time': float, 'video_frame': int}
     gaze_df.columns = ['time', 'video_frame']
@@ -410,9 +368,5 @@ def get_event_times(
 
 
 if __name__ == '__main__':
-    # move_marker_files()
     concatenate_video_data()
     preprocess_diode_data()
-    # preprocess_gaze_data('data/original_data/P17/A1/gaze_positions_on_surface_Phone.csv', False)
-    # preprocess_gaze_data('data/original_data/P02/A1/gaze_positions_on_surface_Phone_01.csv', False)
-    # preprocess_gaze_data('data/original_data/P05/A2/gaze_positions_on_surface_Phone_01.csv', False)
