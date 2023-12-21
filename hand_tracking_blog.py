@@ -45,7 +45,7 @@ def draw_hand_connections(img, results):
 
 def main():
     # Replace 0 with the video path to use a  pre-recorded video
-    cap = cv2.VideoCapture('data/participants/P17/A1/P17_A1.mp4')
+    cap = cv2.VideoCapture('data/original_data/P17/A1/P17_A1.mp4')
 
     while True:
         # Taking the input
