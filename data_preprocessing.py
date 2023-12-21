@@ -1,48 +1,194 @@
+import os
+import cv2
+import time
 import numpy as np
 import pandas as pd
+from pathlib import Path
+from utils import get_files_containing
 
 
-def preprocess_diode_data(participant_id: int, session_id: str, diode_suffix: str) -> pd.DataFrame:
-    """Preprocesses the light diode sensor data.
+# def move_marker_files() -> None:
+#     """Moves all the markers files out of the working directories."""
+#
+#     marker_paths, marker_files = get_files_containing("data/original_data/", "marker_detections")
+#     for dirpath, file in zip(marker_paths, marker_files):
+#         participant_id, session_id = dirpath.split("/")[-2:]
+#         new_filename = f"{participant_id}_{session_id}_{file}"
+#         os.rename(os.path.join(dirpath, file), os.path.join("data/old_unused/marker_data", new_filename))
+
+
+def concatenate_video_data() -> None:
+    """Concatenates all two part session videos."""
+
+    # Get the video and gaze files and group by session
+    video_paths, video_files = get_files_containing("data/original_data/", ".mp4", "block")
+    video_parts = {path: [] for path in set(video_paths)}
+    for dirpath, file in zip(video_paths, video_files):
+        video_parts[dirpath].append(file)
+    gaze_paths, gaze_files = get_files_containing("data/original_data/", "gaze_positions")
+    gaze_parts = {path: [] for path in set(gaze_paths)}
+    for dirpath, file in zip(gaze_paths, gaze_files):
+        gaze_parts[dirpath].append(file)
+
+    # For each session, preprocess the gaze data and concatenate any multi-part files
+    for dirpath, file_list in gaze_parts.items():
+        session_gaze_dfs = []
+        for i, file in enumerate(file_list):
+            participant_id, session_id = dirpath.split("/")[-2:]
+            new_dirpath = f"data/pipeline_data/{participant_id}/{session_id}"
+            Path(new_dirpath).mkdir(parents=True, exist_ok=True)
+            new_filename = f"{participant_id}_{session_id}_video_time.csv"
+            gaze_df = preprocess_gaze_data(os.path.join(dirpath, file), False)
+            if i > 0:
+                time_diff = session_gaze_dfs[-1].time.diff().median()
+                gaze_df.time += session_gaze_dfs[-1].time.iloc[-1] + time_diff
+                gaze_df.video_frame += session_gaze_dfs[-1].video_frame.iloc[-1] + 1
+            session_gaze_dfs.append(gaze_df)
+            # os.rename(os.path.join(dirpath, file), os.path.join("data/old_unused/original_gaze_data", file))
+        combined_gaze_df = pd.concat(session_gaze_dfs, ignore_index=True)
+        combined_gaze_df.time.to_csv(os.path.join(new_dirpath, new_filename), index=False)
+
+    # For each session, preprocess the gaze data and concatenate any multi-part files
+    for dirpath, file_list in video_parts.items():
+        print(f"Processing videos: {file_list}")
+        participant_id, session_id = file_list[0].split(".")[0].split("_")[:2]
+        new_dirpath = f"data/pipeline_data/{participant_id}/{session_id}"
+        Path(new_dirpath).mkdir(parents=True, exist_ok=True)
+        new_filename = f"{participant_id}_{session_id}.mp4"
+        if len(file_list) > 1:
+            # Initialize a new video writer
+            vcap = cv2.VideoCapture(os.path.join(dirpath, file_list[0]))
+            width = int(vcap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(vcap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = vcap.get(cv2.CAP_PROP_FPS)
+            codec = int(vcap.get(cv2.CAP_PROP_FOURCC))
+            vcap.release()
+            cv2.destroyAllWindows()
+            new_video = cv2.VideoWriter(os.path.join(new_dirpath, new_filename), codec, fps, (width, height))
+
+            # Write the video parts to a single file
+            video_frame_reported = 0
+            video_frame_cnt = 0
+            run_time_t0 = time.time()
+            for file in file_list:
+                vcap = cv2.VideoCapture(os.path.join(dirpath, file))
+                video_frame_reported += int(vcap.get(cv2.CAP_PROP_FRAME_COUNT))
+                while vcap.isOpened():
+                    # Read the next frame
+                    ret, frame = vcap.read()
+                    if not ret:
+                        break
+                    video_frame_cnt += 1
+                    new_video.write(frame)
+            print(f"It took {time.time() - run_time_t0:0.2f} seconds to concatenate videos:\n{file_list}")
+            assert video_frame_cnt == video_frame_reported
+        else:
+            os.rename(os.path.join(dirpath, file_list[0]), os.path.join(new_dirpath, file_list[0]))
+
+
+def preprocess_diode_data() -> None:
+    """Preprocesses the light diode sensor data for all two_part_videos and sessions.
+
+    The light diode sensor data is renamed and sessions with multiple files are concatenated."""
+
+    # Get the light diode files and group by session
+    diode_paths, diode_files = get_files_containing("data/original_data/", "light.csv")
+    file_parts = {path: [] for path in set(diode_paths)}
+    for dirpath, file in zip(diode_paths, diode_files):
+        file_parts[dirpath].append(file)
+
+    # For each session, preprocess the light diode data and concatenate any multi-part files
+    for dirpath, file_list in file_parts.items():
+        session_diode_dfs = []
+        for i, file in enumerate(file_list):
+            participant_id, session_id = file.split("_")[:2]
+            new_dirpath = f"data/pipeline_data/P{participant_id}/{session_id}"
+            Path(new_dirpath).mkdir(parents=True, exist_ok=True)
+            new_filename = f"P{participant_id}_{session_id}_diode_sensor.csv"
+            diode_df = format_diode_df(os.path.join(dirpath, file))
+            if i > 0:
+                time_diff = session_diode_dfs[-1].time.diff().median()
+                diode_df.time += session_diode_dfs[-1].time.iloc[-1] + time_diff
+            session_diode_dfs.append(diode_df)
+            # os.rename(os.path.join(dirpath, file), os.path.join("data/old_unused/original_diode_data", file))
+        combined_diode_df = pd.concat(session_diode_dfs, ignore_index=True)
+        combined_diode_df.to_csv(os.path.join(new_dirpath, new_filename), index=False)
+
+    # for (dirpath, dirnames, filenames) in os.walk("data/two_part_videos/"):
+    #     filenames.sort()
+    #     session_diode_files = []
+    #     for file in filenames:
+    #         # Store all light diode data files
+    #         if "light.csv" in file:
+    #             session_diode_files.append(file)
+    #             participant_id, session_id = file.split("_")[:2]
+    #             new_filename = f"{participant_id}_{session_id}_light.csv"
+    #     # If there are multiple light diode files, concatenate them
+    #     if len(session_diode_files) > 1:
+    #         session_diode_dfs = []
+    #         for i, file in enumerate(session_diode_files):
+    #             diode_df = format_diode_df(os.path.join(dirpath, file))
+    #             if i > 0:
+    #                 time_diff = session_diode_dfs[-1].time.diff().median()
+    #                 diode_df.time += session_diode_dfs[-1].time.iloc[-1] + time_diff
+    #             session_diode_dfs.append(diode_df)
+    #         combined_diode_df = pd.concat(session_diode_dfs, ignore_index=True)
+    #         combined_diode_df.to_csv(os.path.join(dirpath, new_filename), index=False)
+    #     # If there is only a single light diode file, reformat it
+    #     elif len(session_diode_files) == 1:
+    #         diode_df = format_diode_df(os.path.join(dirpath, session_diode_files[0]))
+    #         diode_df.to_csv(os.path.join(dirpath, new_filename), index=False)
+    #     for file in session_diode_files:
+    #         os.rename(os.path.join(dirpath, file), os.path.join("data/old_unused/original_diode_data", file))
+
+
+def format_diode_df(diode_path: str) -> pd.DataFrame:
+    """Format the light diode sensor data of a particular session.
 
     Parameters
-        participant_id (int): unique participant identifier
-        session_id (int): session identifier
-        show_plots (bool): whether to display plots as visual checks on the process
+        diode_path (str): relative path to diode data file
+        diode_suffix (str): additional filename identifier
 
     Returns
         diode_df (pd.DataFrame): processed diode data
     """
 
-    diode_path = f"data/participants/P{participant_id:02}/{session_id}/" \
-                 f"{participant_id:02}_{session_id}_{diode_suffix}_light.csv"
+    # diode_path = f"data/two_part_videos/P{participant_id:02}/{session_id}/" \
+    #              f"{participant_id:02}_{session_id}_{diode_suffix}_light.csv"
     diode_df = pd.read_csv(diode_path, usecols=[' timestamp', ' light_value'])
     diode_df.columns = ['time', 'light_value']
     diode_df.time = diode_df.time - diode_df.time.iloc[0]
     return diode_df
 
 
-def preprocess_gaze_data(participant_id: int, session_id: str, plot_result: bool) -> np.ndarray:
+def preprocess_gaze_data(gaze_path: str, plot_result: bool) -> pd.DataFrame:
     """Preprocesses the gaze time data.
 
     The gaze data world_index corresponds to the video frame number, so the gaze data time
     can be used to determine the timestamps of the video frames.
 
     Parameters
-        participant_id (int): unique participant identifier
-        session_id (int): session identifier
+        gaze_path (str): relative path to gaze data file
         plot_result (bool): whether to display plots as visual checks on the process
 
     Returns
-        (np.ndarray): video frame timestamp array
+        gaze_df (pd.DataFrame): gaze positiona and video frame timestamp data
     """
 
-    gaze_path = f"data/participants/P{participant_id:02}/{session_id}/gaze_positions_on_surface_Phone.csv"
+    # gaze_path = f"data/original_data/P{participant_id:02}/{session_id}/gaze_positions_on_surface_Phone.csv"
     gaze_df = pd.read_csv(gaze_path, usecols=['world_timestamp', 'world_index'])
+    column_types = {'time': float, 'video_frame': int}
     gaze_df.columns = ['time', 'video_frame']
+    gaze_df.time = gaze_df.time - gaze_df.time.iloc[0]
     gaze_df = gaze_df.drop_duplicates('video_frame').reset_index(drop=True)
+    if gaze_df.video_frame.iloc[0] != 0:
+        dt_median = gaze_df.time.diff().median()
+        gaze_df.time = gaze_df.time + gaze_df.video_frame.iloc[0] * dt_median
+        gaze_df.loc[-0.5] = [0., 0]
+        gaze_df = gaze_df.sort_index().reset_index(drop=True)
     gaze_df = add_missing_gaze_rows(gaze_df, plot_result)
-    return gaze_df.time.to_numpy('float', copy=True)
+    gaze_df = gaze_df.astype(column_types)
+    return gaze_df
 
 
 def add_missing_gaze_rows(gaze_data: pd.DataFrame, plot_result: bool) -> pd.DataFrame:
@@ -85,7 +231,7 @@ def add_missing_gaze_rows(gaze_data: pd.DataFrame, plot_result: bool) -> pd.Data
         first_frame_ind = gaze_data_updated.index[gaze_data_updated.video_frame.diff() > 1][0] - 1
         frame_prev = gaze_data_updated.iloc[first_frame_ind]
         frame_next = gaze_data_updated.iloc[first_frame_ind + 1]
-        n_missing_frames = int(frame_next.video_frame - frame_prev.video_frame)
+        n_missing_frames = round(frame_next.video_frame - frame_prev.video_frame)
         gap_inds_updated.append(first_frame_ind)
         gap_lens.append(n_missing_frames)
 
@@ -96,10 +242,13 @@ def add_missing_gaze_rows(gaze_data: pd.DataFrame, plot_result: bool) -> pd.Data
         # Calculate the number of dropped frames
         n_dropped_frames = n_dts - n_missing_frames
 
+        # Calculate the number of rows that must be inserted
+        n_new_times = n_dts - n_dropped_frames
+
         # Insert rows into the DataFrame at the proper frame index
-        new_df_rows = np.arange(frame_prev.video_frame, frame_next.video_frame, 1 / n_missing_frames)[1:-1]
-        new_times = np.arange(frame_prev.time, frame_next.time - (n_dropped_frames * dt_median), dt_median)[1:-1]
-        for i, (loc, t) in enumerate(zip(new_df_rows, new_times)):
+        new_df_locs = np.arange(frame_prev.video_frame, frame_prev.video_frame + 1, 1 / n_new_times)[1:]
+        new_times = np.arange(frame_prev.time, frame_next.time, dt_median)[1:n_new_times]
+        for i, (loc, t) in enumerate(zip(new_df_locs, new_times)):
             gaze_data_updated.loc[loc] = [t, frame_prev.video_frame + i + 1]
         gaze_data_updated = gaze_data_updated.sort_index().reset_index(drop=True)
 
@@ -147,8 +296,8 @@ def separate_diode_blocks(
 
     # Find light diode values that indicate a new block begins
     light_values = diode_df.light_value.to_numpy('int', copy=True)
-    # TODO: there are 4 potential types of conditions to handle
-    #  1. High values exist and everything is good (eg. P17-A1)
+    # TODO: there are many potential types of conditions to handle
+    #  1. DONE - High values exist and everything is good (eg. P17-A1)
     #  2. High values exist but can only be used for block end times (eg. P05-A2)
     #      -> Must use AprilTag sets to identify block starts
     #  3. High values exist but can only be used for block start times/first AprilTag identification (eg. none yet)
@@ -258,3 +407,12 @@ def get_event_times(
             block_durations.append(event_times[-1][-1] + 0.7 * avg_trial_len)
 
     return event_times, block_durations
+
+
+if __name__ == '__main__':
+    # move_marker_files()
+    concatenate_video_data()
+    preprocess_diode_data()
+    # preprocess_gaze_data('data/original_data/P17/A1/gaze_positions_on_surface_Phone.csv', False)
+    # preprocess_gaze_data('data/original_data/P02/A1/gaze_positions_on_surface_Phone_01.csv', False)
+    # preprocess_gaze_data('data/original_data/P05/A2/gaze_positions_on_surface_Phone_01.csv', False)
