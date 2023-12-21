@@ -31,7 +31,7 @@ def concatenate_video_data() -> None:
             gaze_df = preprocess_gaze_data(os.path.join(dirpath, file), False)
             if i > 0:
                 time_diff = session_gaze_dfs[-1].time.diff().median()
-                gaze_df.time += session_gaze_dfs[-1].time.iloc[-1] + time_diff
+                gaze_df['time'] += session_gaze_dfs[-1].time.iloc[-1] + time_diff
                 gaze_df.video_frame += session_gaze_dfs[-1].video_frame.iloc[-1] + 1
             session_gaze_dfs.append(gaze_df)
         combined_gaze_df = pd.concat(session_gaze_dfs, ignore_index=True)
@@ -44,7 +44,7 @@ def concatenate_video_data() -> None:
         new_dirpath = f"data/pipeline_data/{participant_id}/{session_id}"
         Path(new_dirpath).mkdir(parents=True, exist_ok=True)
         new_filename = f"{participant_id}_{session_id}.mp4"
-        if len(file_list) > 1:
+        if len(file_list) > 1 and not os.path.exists(os.path.join(new_dirpath, new_filename)):
             # Initialize a new video writer
             vcap = cv2.VideoCapture(os.path.join(dirpath, file_list[0]))
             width = int(vcap.get(cv2.CAP_PROP_FRAME_WIDTH))
