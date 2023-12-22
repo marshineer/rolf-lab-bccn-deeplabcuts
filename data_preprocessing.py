@@ -10,41 +10,20 @@ from utils import get_files_containing
 def concatenate_video_data() -> None:
     """Concatenates all two part session videos."""
 
-    # Get the video and gaze files and group by session
+    # Get the video files and group by session
     video_paths, video_files = get_files_containing("data/original_data/", ".mp4", "block")
     video_parts = {path: [] for path in set(video_paths)}
     for dirpath, file in zip(video_paths, video_files):
         video_parts[dirpath].append(file)
-    gaze_paths, gaze_files = get_files_containing("data/original_data/", "gaze_positions")
-    gaze_parts = {path: [] for path in set(gaze_paths)}
-    for dirpath, file in zip(gaze_paths, gaze_files):
-        gaze_parts[dirpath].append(file)
 
-    # For each session, preprocess the gaze data and concatenate any multi-part files
-    for dirpath, file_list in gaze_parts.items():
-        session_gaze_dfs = []
-        for i, file in enumerate(file_list):
-            participant_id, session_id = dirpath.split("/")[-2:]
-            new_dirpath = f"data/pipeline_data/{participant_id}/{session_id}"
-            Path(new_dirpath).mkdir(parents=True, exist_ok=True)
-            new_filename = f"{participant_id}_{session_id}_video_time.csv"
-            gaze_df = preprocess_gaze_data(os.path.join(dirpath, file), False)
-            if i > 0:
-                time_diff = session_gaze_dfs[-1].time.diff().median()
-                gaze_df['time'] += session_gaze_dfs[-1].time.iloc[-1] + time_diff
-                gaze_df.video_frame += session_gaze_dfs[-1].video_frame.iloc[-1] + 1
-            session_gaze_dfs.append(gaze_df)
-        combined_gaze_df = pd.concat(session_gaze_dfs, ignore_index=True)
-        combined_gaze_df.time.to_csv(os.path.join(new_dirpath, new_filename), index=False)
-
-    # For each session, preprocess the gaze data and concatenate any multi-part files
+    # For each session, concatenate multi-part video files
     for dirpath, file_list in video_parts.items():
-        print(f"Processing videos: {file_list}")
         participant_id, session_id = file_list[0].split(".")[0].split("_")[:2]
         new_dirpath = f"data/pipeline_data/{participant_id}/{session_id}"
         Path(new_dirpath).mkdir(parents=True, exist_ok=True)
-        new_filename = f"{participant_id}_{session_id}.mp4"
-        if len(file_list) > 1 and not os.path.exists(os.path.join(new_dirpath, new_filename)):
+        new_filename = os.path.join(new_dirpath, f"{participant_id}_{session_id}.mp4")
+        if not os.path.exists(new_filename) and len(file_list) > 1:
+            print(f"Processing videos: {file_list}")
             # Initialize a new video writer
             vcap = cv2.VideoCapture(os.path.join(dirpath, file_list[0]))
             width = int(vcap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -53,7 +32,7 @@ def concatenate_video_data() -> None:
             codec = int(vcap.get(cv2.CAP_PROP_FOURCC))
             vcap.release()
             cv2.destroyAllWindows()
-            new_video = cv2.VideoWriter(os.path.join(new_dirpath, new_filename), codec, fps, (width, height))
+            new_video = cv2.VideoWriter(new_filename, codec, fps, (width, height))
 
             # Write the video parts to a single file
             video_frame_reported = 0
@@ -71,8 +50,39 @@ def concatenate_video_data() -> None:
                     new_video.write(frame)
             print(f"It took {time.time() - run_time_t0:0.2f} seconds to concatenate videos")
             assert video_frame_cnt == video_frame_reported
-        else:
+        elif len(file_list) == 1:
+            print(f"Moving video: '{file_list[0]}'")
             os.rename(os.path.join(dirpath, file_list[0]), os.path.join(new_dirpath, file_list[0]))
+
+
+def concatenate_gaze_data() -> None:
+    """Concatenates all two part gaze videos."""
+
+    # Get the gaze files and group by session
+    gaze_paths, gaze_files = get_files_containing("data/original_data/", "gaze_positions")
+    gaze_parts = {path: [] for path in set(gaze_paths)}
+    for dirpath, file in zip(gaze_paths, gaze_files):
+        gaze_parts[dirpath].append(file)
+
+    # For each session, preprocess the gaze data and concatenate any multi-part files
+    for dirpath, file_list in gaze_parts.items():
+        participant_id, session_id = dirpath.split("/")[-2:]
+        new_dirpath = f"data/pipeline_data/{participant_id}/{session_id}"
+        Path(new_dirpath).mkdir(parents=True, exist_ok=True)
+        new_filename = os.path.join(new_dirpath, f"{participant_id}_{session_id}_video_time.csv")
+        if os.path.exists(new_filename):
+            print(f"File already exists: {new_filename}")
+            continue
+        session_gaze_dfs = []
+        for i, file in enumerate(file_list):
+            gaze_df = preprocess_gaze_data(os.path.join(dirpath, file), False)
+            if i > 0:
+                time_diff = session_gaze_dfs[-1].time.diff().median()
+                gaze_df['time'] += session_gaze_dfs[-1].time.iloc[-1] + time_diff
+                gaze_df.video_frame += session_gaze_dfs[-1].video_frame.iloc[-1] + 1
+            session_gaze_dfs.append(gaze_df)
+        combined_gaze_df = pd.concat(session_gaze_dfs, ignore_index=True)
+        combined_gaze_df.time.to_csv(new_filename, index=False)
 
 
 def preprocess_diode_data() -> None:
@@ -88,19 +98,22 @@ def preprocess_diode_data() -> None:
 
     # For each session, preprocess the light diode data and concatenate any multi-part files
     for dirpath, file_list in file_parts.items():
+        participant_id, session_id = file_list[0].split("_")[:2]
+        new_dirpath = f"data/pipeline_data/P{participant_id}/{session_id}"
+        Path(new_dirpath).mkdir(parents=True, exist_ok=True)
+        new_filename = os.path.join(new_dirpath, f"P{participant_id}_{session_id}_diode_sensor.csv")
+        if os.path.exists(new_filename):
+            print(f"File already exists: {new_filename}")
+            continue
         session_diode_dfs = []
         for i, file in enumerate(file_list):
-            participant_id, session_id = file.split("_")[:2]
-            new_dirpath = f"data/pipeline_data/P{participant_id}/{session_id}"
-            Path(new_dirpath).mkdir(parents=True, exist_ok=True)
-            new_filename = f"P{participant_id}_{session_id}_diode_sensor.csv"
             diode_df = format_diode_df(os.path.join(dirpath, file))
             if i > 0:
                 time_diff = session_diode_dfs[-1].time.diff().median()
                 diode_df.time += session_diode_dfs[-1].time.iloc[-1] + time_diff
             session_diode_dfs.append(diode_df)
         combined_diode_df = pd.concat(session_diode_dfs, ignore_index=True)
-        combined_diode_df.to_csv(os.path.join(new_dirpath, new_filename), index=False)
+        combined_diode_df.to_csv(new_filename, index=False)
 
 
 def format_diode_df(diode_path: str) -> pd.DataFrame:
@@ -369,4 +382,5 @@ def get_event_times(
 
 if __name__ == '__main__':
     concatenate_video_data()
+    concatenate_gaze_data()
     preprocess_diode_data()
