@@ -5,8 +5,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# Constants
-N_EDGES_SET = 10
+N_EDGES_APRILTAG_SET = 10
 N_APRILTAGS = 5
 MIN_TRIALS = 40
 
@@ -166,113 +165,45 @@ def get_block_data(
         event_onset_times (list[np.ndarray]): event onset times for each block
     """
 
-    # TODO: there are many potential types of conditions to handle
-    #  1. DONE - High values exist and everything is good (eg. P17-A1)
-    #  2. "High" values exist but are not higher than AprilTag and event onset values (eg. P08-B1)
-    #       -> Can only be used for block end times
-    #       -> Must use AprilTag sets to identify block starts (maybe should just do this as default)
-    #  3. "High" values are actually low values (eg. P02-A1)
-    #       -> Can still be used for block end times
-    #  4. No high values exist, or low values are too noisy to use (eg. )
-    #       -> Must use trail time statistics to determine when the block ends
-    #  5. AprilTag set followed by invalid block (eg. P02-A1, P05-A2, P13-A1)
-    #       -> Invalid blocks contain <40 trials (event onsets)
-    #  6. One (or more) blocks has different threshold values than the rest (eg. P05-A1, P08-B1)
-    #       -> Choose threshold values that work for all blocks, if possible (P08-B1)
-    #       -> Otherwise, disregard block (likely) or set different thresholds (probably not worth it) for particular blocks (P05-A1)
-    #  Notes:
-    #   - Case 3 can be ignored (values are too close to noise to be reliable). Just use trial lengths in this case.
-    #   - Case 3 and 4 are handled in the same way (behave as if there are no "high" threshold values)
-    #   - Case 1 and 2 are handled in the same way (ignore how high the "high" values are and just use to find end times)
-
-    # Process:
-    #  - Split into blocks using AprilTag sets
-    #  - Get all event times
-    #     -> Differentiate event onsets from "high" values (and other potential noise)
-    #  - Determine which blocks are valid
-    #     -> Should be 10 unless one or more blocks are invalid (eg. P05-A2), pass this as a parameter (n_invalid)
-    #  - Determine block end time/duration
-
     # Identify AprilTag sets
     first_apriltag_inds = get_apriltag_sets(diode_df, diode_threshold)
-    # light_values = diode_df.light_value.to_numpy('int', copy=True)
-    # diode_time = diode_df.time.to_numpy('float', copy=True)
-    # all_crossings = np.where(np.diff(light_values > diode_threshold))[0]
-    # first_apriltag_inds = []
-    # skip_tags = 0
-    # for i, ind in enumerate(all_crossings[:-N_EDGES_SET]):
-    #     # Once a set is identified, skip over it
-    #     if skip_tags > 0:
-    #         skip_tags -= 1
-    #         continue
-    #     ind_set = all_crossings[i:i + N_EDGES_SET]
-    #     time_set = diode_time[ind_set]
-    #     # Identify AprilTag sets by the time between the first and last edge (~9 seconds)
-    #     if 9.0 < (time_set[-1] - time_set[0]) < 9.2:
-    #         # print(time_set)
-    #         n_tags = 0
-    #         # Each AprilTag should be visible for ~1 second
-    #         for t1, t2 in zip(time_set[::2], time_set[1::2]):
-    #             if 0.9 < (t2 - t1) < 1.10:
-    #                 n_tags += 1
-    #         # There should be 5 AprilTags in a set
-    #         if n_tags == N_APRILTAGS:
-    #             skip_tags = N_EDGES_SET - 1
-    #             first_apriltag_inds.append(ind)
-    # # for ind0, ind1 in zip(all_crossings[:-N_EDGES_SET - 1], all_crossings[N_EDGES_SET - 1:]):
-    # #     if 9.0 < (diode_time[ind1] - diode_time[ind0]) < 9.2:
-    # #         first_apriltag_inds.append(ind0)
 
     # Separate data into valid blocks
     all_blocks = separate_blocks(diode_df, first_apriltag_inds)
-    # all_blocks = []
-    # for i, ind1 in enumerate(first_apriltag_inds):
-    #     if i < len(first_apriltag_inds) - 1:
-    #         ind2 = first_apriltag_inds[i + 1]
-    #         block = diode_df.iloc[ind1:ind2, :]
-    #     else:
-    #         block = diode_df.iloc[ind1:, :]
-    #     # block_time = block.time.to_numpy('float', copy=True)
-    #     # block_time -= block_time[0]
-    #     # block.loc[:, 'time'] = block_time
-    #     block.time -= block.time.iloc[0]
-    #     block.reset_index(drop=True, inplace=True)
-    #     all_blocks.append(block)
 
     valid_blocks = []
     valid_block_inds = []
     event_onset_times = []
-    block_id = 0
     for i, block in enumerate(all_blocks):
         # Calculate a list of all threshold crossings
         block_time = block.time.to_numpy('float', copy=True)
         block_light_values = block.light_value.to_numpy('int', copy=True)
         block_crossings = np.where(np.diff(block_light_values > diode_threshold))[0]
 
-        # Get the event onset times
+        # Get the event onset times, calculated depending on the threshold scenario
         if separator_threshold is None:
             last_event_ind = None
         elif separator_threshold > diode_threshold:
             last_event_ind = -2
         elif separator_threshold == diode_threshold:
-            event_crossing_times = block_time[block_crossings[N_EDGES_SET:]]
+            event_crossing_times = block_time[block_crossings[N_EDGES_APRILTAG_SET:]]
             if event_crossing_times.size < MIN_TRIALS:
                 continue
             event_durations = np.diff(event_crossing_times)[::2]
             avg_event_duration = np.mean(event_durations)
-            last_event_ind = np.where(event_durations > (3 * avg_event_duration))[0][0] * 2 + N_EDGES_SET
+            last_event_ind = np.where(event_durations > (3 * avg_event_duration))[0][0] * 2 + N_EDGES_APRILTAG_SET
         else:
             raise ValueError("The separator_threshold provided is invalid.")
         if separator_threshold is not None and len(valid_blocks) == (n_blocks - 1):
             last_event_ind = -1
-        event_onset_inds = block_crossings[N_EDGES_SET:last_event_ind:2]
+        event_onset_inds = block_crossings[N_EDGES_APRILTAG_SET:last_event_ind:2]
         event_onset_times.append(block_time[event_onset_inds])
 
-        # If there are not enough trials in the block
+        # If there are not enough trials in the block, it is invalid
         if len(event_onset_inds) < MIN_TRIALS:
             continue
-        block_id += 1
 
+        # Trim the block to remove excess data, then store valid blocks
         if last_event_ind is not None:
             # TODO: Check whether separator diode values occur in all blocks when they occur at all
             block_end_ind = block_crossings[last_event_ind]
@@ -283,13 +214,13 @@ def get_block_data(
                 block_end_ind = None
             else:
                 block_end_ind = np.where(block_time > block_end_time)[0][0]
-
         if block_end_ind is not None:  # TODO: check to ensure this handles all cases
             valid_blocks.append(block.iloc[:block_end_ind, :])
         else:
             valid_blocks.append(block)
         valid_block_inds.append(i)
 
+        # As a visual check
         if show_plots:
             fig, ax = plt.subplots(1, 1, figsize=(8, 5))
             ax.plot(block_time, block_light_values)
@@ -298,6 +229,7 @@ def get_block_data(
             ax.plot(valid_blocks[-1].time, valid_blocks[-1].light_value)
             plt.show()
             plt.close()
+
     assert len(valid_blocks) == n_blocks
 
     return valid_blocks, valid_block_inds, event_onset_times
@@ -323,12 +255,12 @@ def get_apriltag_sets(diode_df: pd.DataFrame, diode_threshold: int) -> list[int]
     all_crossings = np.where(np.diff(light_values > diode_threshold))[0]
     first_apriltag_inds = []
     skip_tags = 0
-    for i, ind in enumerate(all_crossings[:-N_EDGES_SET]):
-        # Once a set is identified, skip over it
+    for i, ind in enumerate(all_crossings[:-N_EDGES_APRILTAG_SET]):
+        # Once a full AprilTag set is identified, skip over it
         if skip_tags > 0:
             skip_tags -= 1
             continue
-        ind_set = all_crossings[i:i + N_EDGES_SET]
+        ind_set = all_crossings[i:i + N_EDGES_APRILTAG_SET]
         time_set = diode_time[ind_set]
         # Identify AprilTag sets by the time between the first and last edge (~9 seconds)
         if 9.0 < (time_set[-1] - time_set[0]) < 9.2:
@@ -337,9 +269,9 @@ def get_apriltag_sets(diode_df: pd.DataFrame, diode_threshold: int) -> list[int]
             for t1, t2 in zip(time_set[::2], time_set[1::2]):
                 if 0.9 < (t2 - t1) < 1.10:
                     n_tags += 1
-            # There should be 5 AprilTags in a set
+            # There should be exactly 5 AprilTags in a set
             if n_tags == N_APRILTAGS:
-                skip_tags = N_EDGES_SET - 1
+                skip_tags = N_EDGES_APRILTAG_SET - 1
                 first_apriltag_inds.append(ind)
 
     return first_apriltag_inds
