@@ -92,24 +92,38 @@ def load_diode_data(participant_id: str, session_id: str) -> pd.DataFrame:
         session_id (str): session identifier ["A1", "A2", "B1", "B2"]
 
     Returns
-        diode_df (pd.DataFrame): processed diode data
+        diode_df (pd.DataFrame): processed diode data for a single session
     """
     diode_path = f"data/pipeline_data/{participant_id}/{session_id}/{participant_id:02}_{session_id}_diode_sensor.csv"
     return pd.read_csv(diode_path)
 
 
 def load_video_time(participant_id: str, session_id: str) -> np.ndarray:
-    """Loads the preprocessed light diode sensor data as a dataframe.
+    """Loads the video time data, derived from the gaze data files.
 
     Parameters
         participant_id (str): unique participant identifier "PXX"
         session_id (str): session identifier ["A1", "A2", "B1", "B2"]
 
     Returns
-        diode_df (pd.DataFrame): processed diode data
+        (np.ndarray): video frame timestamps for a single session
     """
     time_path = f"data/pipeline_data/{participant_id}/{session_id}/{participant_id:02}_{session_id}_video_time.csv"
     return pd.read_csv(time_path).to_numpy('float')
+
+
+def load_video_mp4(participant_id: str, session_id: str) -> cv2.VideoCapture:
+    """Loads the preprocessed session video as an OpenCV video capture object.
+
+    Parameters
+        participant_id (str): unique participant identifier "PXX"
+        session_id (str): session identifier ["A1", "A2", "B1", "B2"]
+
+    Returns
+        (cv2.VideoCapture): single video file for an experimental session
+    """
+    video_path = f"data/pipeline_data/{participant_id}/{session_id}/{participant_id:02}_{session_id}.mp4"
+    return cv2.VideoCapture(video_path)
 
 
 def get_block_data(
