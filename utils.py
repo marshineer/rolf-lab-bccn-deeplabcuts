@@ -3,6 +3,12 @@ import sys
 import cv2
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+
+# Constants
+N_EDGES_SET = 10
+N_APRILTAGS = 5
+MIN_TRIALS = 40
 
 
 def get_fourcc(cap: cv2.VideoCapture) -> str:
@@ -105,3 +111,260 @@ def load_video_time(participant_id: str, session_id: str) -> np.ndarray:
     """
     time_path = f"data/pipeline_data/{participant_id}/{session_id}/{participant_id:02}_{session_id}_video_time.csv"
     return pd.read_csv(time_path).to_numpy('float')
+
+
+def get_block_data(
+        diode_df: pd.DataFrame,
+        diode_threshold: int,
+        separator_threshold: int | None,
+        n_blocks: int = 10,
+        show_plots: bool = False,
+) -> tuple[list[pd.DataFrame], list[int], list[np.ndarray]]:
+    """Separates the diode data into experimental blocks.
+
+    Since blocks tend to be divided by relatively high diode light values, these "separator" threshold
+    crossings can be used to determine the end of an experimental block. The separator values may be
+    greater than the event and AprilTag values, or approximately the same. Each of these cases must be
+    handled differently.
+
+    This function assumes a set of five AprilTags begin each block. Since the exact number of trials in
+    a block is variable, only a minimum number of trials is required for a block to be considered valid.
+
+    There are various special cases which must be handled.
+
+    Cases concerning the diode light values:
+    1. Separator values exist, and are much greater than the AprilTag and event onset values
+        -> separator_threshold >> diode_threshold
+    2. Separator values exist but are approximately the same as AprilTag and event onset values
+        -> separator_threshold == diode_threshold
+    3. Separator values do not exist, or are very low
+        -> separator_threshold == None
+
+    Cases concerning the progression of blocks with a session
+    1. An AprilTag set is followed by invalid block
+         -> Identified by checking the number of trials (valid blocks contain >= 40 trials)
+    2. One (or more) blocks has a different diode threshold than the rest (increasing, decreasing or outlier)
+         -> Thresholds must be chosen individually for each experiment
+
+    Outline of function calculations:
+     - Split the diode data into blocks using the AprilTag sets
+     - Calculate the event onset indices based on the cases described above
+     - Truncate the blocks to remove excess data (to help speed up video processing later)
+     - Determine which blocks are valid (>=40 trials)
+     - Check that the number of valid blocks found is the number expected
+
+    Parameters
+        diode_df (pd.DataFrame): raw light diode data
+        diode_threshold (int): light diode threshold for all diode events
+        separator_threshold (int): light diode threshold for signalling the end of a block
+        n_blocks (int): number of valid blocks in the diode data (10 unless otherwise specified)
+        show_plots (bool): if True, show plots to visually check the process
+
+    Returns
+        valid_blocks (list[pd.DataFrame]): light diode data separated into "valid" blocks (>=40 trials)
+        valid_block_inds (list[int]): indices of the AprilTag sets that correspond to valid blocks
+        event_onset_times (list[np.ndarray]): event onset times for each block
+    """
+
+    # TODO: there are many potential types of conditions to handle
+    #  1. DONE - High values exist and everything is good (eg. P17-A1)
+    #  2. "High" values exist but are not higher than AprilTag and event onset values (eg. P08-B1)
+    #       -> Can only be used for block end times
+    #       -> Must use AprilTag sets to identify block starts (maybe should just do this as default)
+    #  3. "High" values are actually low values (eg. P02-A1)
+    #       -> Can still be used for block end times
+    #  4. No high values exist, or low values are too noisy to use (eg. )
+    #       -> Must use trail time statistics to determine when the block ends
+    #  5. AprilTag set followed by invalid block (eg. P02-A1, P05-A2, P13-A1)
+    #       -> Invalid blocks contain <40 trials (event onsets)
+    #  6. One (or more) blocks has different threshold values than the rest (eg. P05-A1, P08-B1)
+    #       -> Choose threshold values that work for all blocks, if possible (P08-B1)
+    #       -> Otherwise, disregard block (likely) or set different thresholds (probably not worth it) for particular blocks (P05-A1)
+    #  Notes:
+    #   - Case 3 can be ignored (values are too close to noise to be reliable). Just use trial lengths in this case.
+    #   - Case 3 and 4 are handled in the same way (behave as if there are no "high" threshold values)
+    #   - Case 1 and 2 are handled in the same way (ignore how high the "high" values are and just use to find end times)
+
+    # Process:
+    #  - Split into blocks using AprilTag sets
+    #  - Get all event times
+    #     -> Differentiate event onsets from "high" values (and other potential noise)
+    #  - Determine which blocks are valid
+    #     -> Should be 10 unless one or more blocks are invalid (eg. P05-A2), pass this as a parameter (n_invalid)
+    #  - Determine block end time/duration
+
+    # Identify AprilTag sets
+    first_apriltag_inds = get_apriltag_sets(diode_df, diode_threshold)
+    # light_values = diode_df.light_value.to_numpy('int', copy=True)
+    # diode_time = diode_df.time.to_numpy('float', copy=True)
+    # all_crossings = np.where(np.diff(light_values > diode_threshold))[0]
+    # first_apriltag_inds = []
+    # skip_tags = 0
+    # for i, ind in enumerate(all_crossings[:-N_EDGES_SET]):
+    #     # Once a set is identified, skip over it
+    #     if skip_tags > 0:
+    #         skip_tags -= 1
+    #         continue
+    #     ind_set = all_crossings[i:i + N_EDGES_SET]
+    #     time_set = diode_time[ind_set]
+    #     # Identify AprilTag sets by the time between the first and last edge (~9 seconds)
+    #     if 9.0 < (time_set[-1] - time_set[0]) < 9.2:
+    #         # print(time_set)
+    #         n_tags = 0
+    #         # Each AprilTag should be visible for ~1 second
+    #         for t1, t2 in zip(time_set[::2], time_set[1::2]):
+    #             if 0.9 < (t2 - t1) < 1.10:
+    #                 n_tags += 1
+    #         # There should be 5 AprilTags in a set
+    #         if n_tags == N_APRILTAGS:
+    #             skip_tags = N_EDGES_SET - 1
+    #             first_apriltag_inds.append(ind)
+    # # for ind0, ind1 in zip(all_crossings[:-N_EDGES_SET - 1], all_crossings[N_EDGES_SET - 1:]):
+    # #     if 9.0 < (diode_time[ind1] - diode_time[ind0]) < 9.2:
+    # #         first_apriltag_inds.append(ind0)
+
+    # Separate data into valid blocks
+    all_blocks = separate_blocks(diode_df, first_apriltag_inds)
+    # all_blocks = []
+    # for i, ind1 in enumerate(first_apriltag_inds):
+    #     if i < len(first_apriltag_inds) - 1:
+    #         ind2 = first_apriltag_inds[i + 1]
+    #         block = diode_df.iloc[ind1:ind2, :]
+    #     else:
+    #         block = diode_df.iloc[ind1:, :]
+    #     # block_time = block.time.to_numpy('float', copy=True)
+    #     # block_time -= block_time[0]
+    #     # block.loc[:, 'time'] = block_time
+    #     block.time -= block.time.iloc[0]
+    #     block.reset_index(drop=True, inplace=True)
+    #     all_blocks.append(block)
+
+    valid_blocks = []
+    valid_block_inds = []
+    event_onset_times = []
+    block_id = 0
+    for i, block in enumerate(all_blocks):
+        # Calculate a list of all threshold crossings
+        block_time = block.time.to_numpy('float', copy=True)
+        block_light_values = block.light_value.to_numpy('int', copy=True)
+        block_crossings = np.where(np.diff(block_light_values > diode_threshold))[0]
+
+        # Get the event onset times
+        if separator_threshold is None:
+            last_event_ind = None
+        elif separator_threshold > diode_threshold:
+            last_event_ind = -2
+        elif separator_threshold == diode_threshold:
+            event_crossing_times = block_time[block_crossings[N_EDGES_SET:]]
+            if event_crossing_times.size < MIN_TRIALS:
+                continue
+            event_durations = np.diff(event_crossing_times)[::2]
+            avg_event_duration = np.mean(event_durations)
+            last_event_ind = np.where(event_durations > (3 * avg_event_duration))[0][0] * 2 + N_EDGES_SET
+        else:
+            raise ValueError("The separator_threshold provided is invalid.")
+        if separator_threshold is not None and len(valid_blocks) == (n_blocks - 1):
+            last_event_ind = -1
+        event_onset_inds = block_crossings[N_EDGES_SET:last_event_ind:2]
+        event_onset_times.append(block_time[event_onset_inds])
+
+        # If there are not enough trials in the block
+        if len(event_onset_inds) < MIN_TRIALS:
+            continue
+        block_id += 1
+
+        if last_event_ind is not None:
+            # TODO: Check whether separator diode values occur in all blocks when they occur at all
+            block_end_ind = block_crossings[last_event_ind]
+        else:
+            avg_onset_diff = np.mean(np.diff(event_onset_times[-1]))
+            block_end_time = event_onset_times[-1][-1] + avg_onset_diff
+            if block_end_time > block_time[-1]:
+                block_end_ind = None
+            else:
+                block_end_ind = np.where(block_time > block_end_time)[0][0]
+
+        if block_end_ind is not None:  # TODO: check to ensure this handles all cases
+            valid_blocks.append(block.iloc[:block_end_ind, :])
+        else:
+            valid_blocks.append(block)
+        valid_block_inds.append(i)
+
+        if show_plots:
+            fig, ax = plt.subplots(1, 1, figsize=(8, 5))
+            ax.plot(block_time, block_light_values)
+            ax.vlines(block_time[block_crossings], 0, diode_threshold, colors='r', linewidths=3)
+            ax.vlines(event_onset_times[-1], 0, diode_threshold // 2, colors='g', linewidths=3)
+            ax.plot(valid_blocks[-1].time, valid_blocks[-1].light_value)
+            plt.show()
+            plt.close()
+    assert len(valid_blocks) == n_blocks
+
+    return valid_blocks, valid_block_inds, event_onset_times
+
+
+def get_apriltag_sets(diode_df: pd.DataFrame, diode_threshold: int) -> list[int]:
+    """Returns the index of the first AprilTag in each set.
+
+    Each index corresponds to a time in the diode light sensor data.
+
+    Parameters
+        diode_df (pd.DataFrame): raw light diode data
+        diode_threshold (int): light diode threshold for all diode events
+        separator_threshold (int): light diode threshold for signalling the end of a block
+        n_blocks_missing (int): number of blocks missing or unusable from data
+
+    Returns
+        first_apriltag_inds (list[int]): indices marking the start of each AprilTag set
+    """
+
+    light_values = diode_df.light_value.to_numpy('int', copy=True)
+    diode_time = diode_df.time.to_numpy('float', copy=True)
+    all_crossings = np.where(np.diff(light_values > diode_threshold))[0]
+    first_apriltag_inds = []
+    skip_tags = 0
+    for i, ind in enumerate(all_crossings[:-N_EDGES_SET]):
+        # Once a set is identified, skip over it
+        if skip_tags > 0:
+            skip_tags -= 1
+            continue
+        ind_set = all_crossings[i:i + N_EDGES_SET]
+        time_set = diode_time[ind_set]
+        # Identify AprilTag sets by the time between the first and last edge (~9 seconds)
+        if 9.0 < (time_set[-1] - time_set[0]) < 9.2:
+            n_tags = 0
+            # Each AprilTag should be visible for ~1 second
+            for t1, t2 in zip(time_set[::2], time_set[1::2]):
+                if 0.9 < (t2 - t1) < 1.10:
+                    n_tags += 1
+            # There should be 5 AprilTags in a set
+            if n_tags == N_APRILTAGS:
+                skip_tags = N_EDGES_SET - 1
+                first_apriltag_inds.append(ind)
+
+    return first_apriltag_inds
+
+
+def separate_blocks(diode_df: pd.DataFrame, apriltag_inds: list[int]) -> list[pd.DataFrame]:
+    """Returns a list of the diode data separated by AprilTags.
+
+    Parameters
+        diode_df (pd.DataFrame): raw light diode data
+        apriltag_inds (list[int]): indices marking the start of each AprilTag set
+
+    Returns
+        all_blocks (list[pd.DataFrame]): all diode data blocks, separated by AprilTag sets
+    """
+
+    all_blocks = []
+    for i, ind1 in enumerate(apriltag_inds):
+        if i < len(apriltag_inds) - 1:
+            ind2 = apriltag_inds[i + 1]
+            block = diode_df.iloc[ind1:ind2, :]
+        else:
+            block = diode_df.iloc[ind1:, :]
+        block.time -= block.time.iloc[0]
+        block.reset_index(drop=True, inplace=True)
+        all_blocks.append(block)
+
+    return all_blocks
