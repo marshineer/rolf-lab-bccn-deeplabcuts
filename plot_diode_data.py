@@ -1,7 +1,48 @@
+import json
 import argparse
 import matplotlib.pyplot as plt
-from utils import get_files_containing, load_diode_data
-from data_preprocessing import separate_diode_blocks
+from utils import get_files_containing, load_diode_data, get_block_data
+from utils_pipeline import SessionConfig
+# from data_preprocessing import separate_diode_blocks
+
+
+def plot_diode_data(participant_id: str = None, session_id: str = None) -> None:
+    if participant_id is None or session_id is None:
+        diode_paths, diode_files = get_files_containing("data/pipeline_data", "diode_sensor.csv")
+        for path, file in zip(diode_paths, diode_files):
+            participant_id, session_id = file.split("_")[:2]
+            diode_df = load_diode_data(participant_id, session_id)
+            fig, ax = plt.subplots(1, 1, figsize=(16, 5))
+            ax.plot(diode_df.time, diode_df.light_value)
+            ax.set_xlabel("Time")
+            ax.set_ylabel("Diode Brightness")
+            ax.set_title(f"Participant {participant_id}, Session {session_id}", fontsize=20)
+            plt.show()
+            plt.close()
+    else:
+        diode_df = load_diode_data(participant_id, session_id)
+        fig1, ax1 = plt.subplots(1, 1, figsize=(16, 6))
+        ax1.plot(diode_df.time, diode_df.light_value)
+        ax1.set_xlabel("Time")
+        ax1.set_ylabel("Diode Brightness")
+        ax1.set_title(f"Participant {participant_id}, Session {session_id}", fontsize=20)
+        plt.show()
+        plt.close()
+
+        # config_path = f"./data/pipeline_data/{participant_id}/{session_id}/config.json"
+        config_path = f"./data/old_unused/cannot_parse_now/{participant_id}/{session_id}/config.json"
+        with open(config_path, "r") as fd:
+            session_settings = json.load(fd)
+            print(session_settings)
+            sesssion_config = SessionConfig(**session_settings)
+        _ = get_block_data(
+            diode_df,
+            sesssion_config.diode_threshold,
+            sesssion_config.separator_threshold,
+            sesssion_config.n_blocks,
+            True
+        )
+        plt.close(fig1)
 
 
 if __name__ == '__main__':
@@ -18,49 +59,6 @@ if __name__ == '__main__':
         default=None,
         help="Session ID, 'AX' or 'BX'"
     )
-    parser.add_argument(
-        "-ht", "--high_threshold",
-        type=int,
-        default=200,
-        help="High value light diode threshold"
-    )
-    parser.add_argument(
-        "-at", "--apriltag_threshold",
-        type=int,
-        default=80,
-        help="AprilTag light diode threshold"
-    )
-    parser.add_argument(
-        "-et", "--event_threshold",
-        type=int,
-        default=50,
-        help="Event onset light diode threshold"
-    )
     args = parser.parse_args()
 
-    if args.participant_id is None or args.session_id is None:
-        diode_paths, diode_files = get_files_containing("data/pipeline_data/", "diode_sensor.csv")
-        for path, file in zip(diode_paths, diode_files):
-            participant_id, session_id = file.split("_")[:2]
-            diode_df = load_diode_data(participant_id, session_id)
-            fig, ax = plt.subplots(1, 1, figsize=(8, 5))
-            ax.plot(diode_df.time, diode_df.light_value)
-            ax.set_xlabel("Time")
-            ax.set_ylabel("Diode Brightness")
-            ax.set_title(f"Participant {participant_id}, Session {session_id}", fontsize=20)
-            plt.show()
-            plt.close()
-    else:
-        diode_df = load_diode_data(args.participant_id, args.session_id)
-        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-        ax.plot(diode_df.time, diode_df.light_value)
-        plt.show()
-        plt.close()
-
-        diode_df_blocks = separate_diode_blocks(diode_df, args.apriltag_threshold, args.high_threshold)
-        for block_df in diode_df_blocks:
-            fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-            ax.plot(block_df.time, block_df.light_value)
-            # plt.show()
-            plt.close()
-        # event_onsets = get_event_times(diode_df_blocks, args.event_threshold)
+    plot_diode_data(args.participant_id, args.session_id)
