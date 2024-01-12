@@ -1,10 +1,25 @@
-import argparse
-from utils_pipeline import VideoProcessingPipeline, PipelineConfig
-# from temp_utils import VideoProcessingPipeline, iterate_video_frames
-# from preprocessing_utils import PipelineConfig
+import os
+import json
+from utils_pipeline import VideoProcessingPipeline, PipelineConfig, SessionConfig
+from utils import get_files_containing
 
 
 # TODO
+#  - Start doing post-processing:
+#    -> Plot hand position, velocity, acceleration (use cubic spline for smoothing) during trials
+#       >> Include standard deviation envelopes
+#       >> Align to event onset times
+#       >> Separate by trial condition
+
+# TODO (DONE):
+#  - Organize different configs to easily switch between them
+#    -> Should be able to quickly run and refer to them
+#    -> Probably want to put PipelineConfig class into pipeline_config.json
+#    -> Configs should be organized by the type of processing the session requires
+#  - The reference AprilTag cannot always be the top left
+#    -> It's cut off in some frames (need to use bottom left in P13-A1, for example)
+#    -> This is calculated as the AprilTag that is visible in the most video frames
+#  - Change participant_id from int to str
 #  - Handle cases:
 #    -> Extra set of AprilTags before start of trial blocks (eg. P02-A1)
 #       >> Probably can just add boolean to config
@@ -22,87 +37,39 @@ from utils_pipeline import VideoProcessingPipeline, PipelineConfig
 #           (This one got restarted. Can use to figure out how to handle above condition. Are all
 #           restarted blocks missing the high diode value?)
 #       >> Maybe when len(first_apriltag_inds_time) > 10, check for len(event_times) < 40
-#  - Organize different configs to easily switch between them
-#    -> Should be able to quickly run and refer to them
-#    -> Probably want to put PipelineConfig class into pipeline_config.py
-#    -> Configs should be organized by the type of processing the session requires (i.e. which cases from above)
-#  - Start doing post-processing:
-#    -> Plot hand position, velocity, acceleration (use cubic spline for smoothing) during trials
-#       >> Include standard deviation envelopes
-#       >> Align to event onset times
-#       >> Separate by trial condition
 
-# Landmark and kwarg references
-# https://pupil-apriltags.readthedocs.io/en/stable/api.html
-# https://juliarobotics.org/AprilTags.jl/latest/
-# https://mediapipe.readthedocs.io/en/latest/solutions/hands.html
-apriltag_kwargs = {
-    "quad_decimate": 2.0,
-    "decode_sharpening": 0.25,
-}
-hand_landmarks = {
-    "Index Finger Tip": 8,
-    "Index Finger Base": 5,
-    "Wrist": 0,
-}
-mediapipe_kwargs = {
-    "max_num_hands": 2,
-    "model_complexity": 1,
-    "min_detection_confidence": 0.5,
-    "min_tracking_confidence": 0.5,
-}
-# APRILTAG_THRESHOLD = 50
-# EVENT_THRESHOLD = 80
-# BLOCK_THRESHOLD = 200
-APRILTAG_THRESHOLD = 50
-EVENT_THRESHOLD = 80
-BLOCK_THRESHOLD = None
 
 if __name__ == '__main__':
-    # parser = argparse.ArgumentParser()
-    # parser.add_argument(
-    #     "participant_id",
-    #     type=int
-    # )
-    # parser.add_argument(
-    #     "session_id",
-    #     type=int
-    # )
-    # parser.add_argument(
-    #     "diode_suffix",
-    #     type=str
-    # )
-    # args = parser.parse_args()
-    # PARTICIPANT_ID = 17
-    # SESSION_ID = "A1"
-    # DIODE_SUFFIX = "01"
-    # VIDEO_SUFFIX = ""
-    PARTICIPANT_ID = 2
-    SESSION_ID = "A1"
-    DIODE_SUFFIX = "2"
-    VIDEO_SUFFIX = "_01"
+    with open("pipeline_config.json", "r") as fd:
+        pipeline_settings = json.load(fd)
+        print(pipeline_settings)
+        pipeline_config = PipelineConfig(**pipeline_settings)
 
-    pipeline_config = PipelineConfig(
-        # participant_id=args.participant_id,
-        # session_id=args.session_id,
-        participant_id=PARTICIPANT_ID,
-        session_id=SESSION_ID,
-        diode_suffix=DIODE_SUFFIX,
-        video_suffix=VIDEO_SUFFIX,
-        apriltag_threshold=APRILTAG_THRESHOLD,
-        event_threshold=EVENT_THRESHOLD,
-        block_threshold=BLOCK_THRESHOLD,
-        tracked_hand_landmarks=hand_landmarks,
-        save_video=True,
-        show_video=False,
-        visual_plot_check=True,
-        apriltag_kwargs=apriltag_kwargs,
-        mediapipe_kwargs=mediapipe_kwargs,
-    )
+    # Get the config files and iterate through
+    config_paths, _ = get_files_containing("data/pipeline_data", "config.json")
+    for fpath in config_paths:
+        # Load the session config file
+        with open(os.path.join(fpath, "config.json"), "r") as fd:
+            session_settings = json.load(fd)
+            print(session_settings)
+            session_config = SessionConfig(**session_settings)
+        _, block_video_files = get_files_containing(os.path.join(fpath, "block_videos"), "block")
+        if len(block_video_files) == session_config.n_blocks:
+            continue
+        print("\n\n\n#############################################################\n"
+              "######################## New Session ########################\n"
+              f"############## Participant: {session_config.participant_id} - "
+              f"Sesssion: {session_config.session_id} ##############\n"
+              "#############################################################\n")
 
-    # Instantiate the pipeline
-    pipeline = VideoProcessingPipeline(pipeline_config)
+        # Instantiate the pipeline
+        pipeline = VideoProcessingPipeline(pipeline_config, session_config)
 
-    # Run the pipeline
-    data = pipeline.iterate_video_frames()
-    data.relative_hand_positions(True)
+        # Run the pipeline and save the results
+        data = pipeline.iterate_video_frames()
+
+        # with open(fpath, "wb") as f:
+        #     pickle.dump(data, f)
+        # with open('filename.pickle', 'rb') as handle:
+        #     b = pickle.load(handle)
+        # data.relative_hand_positions(True)
