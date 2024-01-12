@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+pd.options.mode.chained_assignment = None
 
 N_EDGES_APRILTAG_SET = 10
 N_APRILTAGS = 5
@@ -94,7 +95,7 @@ def load_diode_data(participant_id: str, session_id: str) -> pd.DataFrame:
     Returns
         diode_df (pd.DataFrame): processed diode data for a single session
     """
-    diode_path = f"data/pipeline_data/{participant_id}/{session_id}/{participant_id:02}_{session_id}_diode_sensor.csv"
+    diode_path = f"data/pipeline_data/{participant_id}/{session_id}/{participant_id}_{session_id}_diode_sensor.csv"
     return pd.read_csv(diode_path)
 
 
@@ -108,8 +109,8 @@ def load_video_time(participant_id: str, session_id: str) -> np.ndarray:
     Returns
         (np.ndarray): video frame timestamps for a single session
     """
-    time_path = f"data/pipeline_data/{participant_id}/{session_id}/{participant_id:02}_{session_id}_video_time.csv"
-    return pd.read_csv(time_path).to_numpy('float')
+    time_path = f"data/pipeline_data/{participant_id}/{session_id}/{participant_id}_{session_id}_video_time.csv"
+    return pd.read_csv(time_path).to_numpy('float').squeeze()
 
 
 def load_video_mp4(participant_id: str, session_id: str) -> cv2.VideoCapture:
@@ -122,7 +123,7 @@ def load_video_mp4(participant_id: str, session_id: str) -> cv2.VideoCapture:
     Returns
         (cv2.VideoCapture): single video file for an experimental session
     """
-    video_path = f"data/pipeline_data/{participant_id}/{session_id}/{participant_id:02}_{session_id}.mp4"
+    video_path = f"data/pipeline_data/{participant_id}/{session_id}/{participant_id}_{session_id}.mp4"
     return cv2.VideoCapture(video_path)
 
 
@@ -195,31 +196,23 @@ def get_block_data(
         block_crossings = np.where(np.diff(block_light_values > diode_threshold))[0]
 
         # Get the event onset times, calculated depending on the threshold scenario
-        if separator_threshold is None:
-            last_event_ind = None
-        elif separator_threshold > diode_threshold:
-            last_event_ind = -2
-        elif separator_threshold == diode_threshold:
-            event_crossing_times = block_time[block_crossings[N_EDGES_APRILTAG_SET:]]
-            if event_crossing_times.size < MIN_TRIALS:
-                continue
-            event_durations = np.diff(event_crossing_times)[::2]
-            avg_event_duration = np.mean(event_durations)
-            last_event_ind = np.where(event_durations > (3 * avg_event_duration))[0][0] * 2 + N_EDGES_APRILTAG_SET
-        else:
-            raise ValueError("The separator_threshold provided is invalid.")
-        if separator_threshold is not None and len(valid_blocks) == (n_blocks - 1):
-            last_event_ind = -1
+        last_event_ind = get_last_event_ind(
+            block_crossings,
+            block_time,
+            diode_threshold,
+            separator_threshold,
+            len(valid_blocks),
+            n_blocks,
+        )
         event_onset_inds = block_crossings[N_EDGES_APRILTAG_SET:last_event_ind:2]
-        event_onset_times.append(block_time[event_onset_inds])
 
         # If there are not enough trials in the block, it is invalid
         if len(event_onset_inds) < MIN_TRIALS:
             continue
+        event_onset_times.append(block_time[event_onset_inds])
 
         # Trim the block to remove excess data, then store valid blocks
         if last_event_ind is not None:
-            # TODO: Check whether separator diode values occur in all blocks when they occur at all
             block_end_ind = block_crossings[last_event_ind]
         else:
             avg_onset_diff = np.mean(np.diff(event_onset_times[-1]))
@@ -236,7 +229,7 @@ def get_block_data(
 
         # As a visual check
         if show_plots:
-            fig, ax = plt.subplots(1, 1, figsize=(8, 5))
+            fig, ax = plt.subplots(1, 1, figsize=(16, 5))
             ax.plot(block_time, block_light_values)
             ax.vlines(block_time[block_crossings], 0, diode_threshold, colors='r', linewidths=3)
             ax.vlines(event_onset_times[-1], 0, diode_threshold // 2, colors='g', linewidths=3)
@@ -277,11 +270,11 @@ def get_apriltag_sets(diode_df: pd.DataFrame, diode_threshold: int) -> list[int]
         ind_set = all_crossings[i:i + N_EDGES_APRILTAG_SET]
         time_set = diode_time[ind_set]
         # Identify AprilTag sets by the time between the first and last edge (~9 seconds)
-        if 9.0 < (time_set[-1] - time_set[0]) < 9.2:
+        if 8.9 < time_set[-1] - time_set[0] < 9.3:
             n_tags = 0
             # Each AprilTag should be visible for ~1 second
             for t1, t2 in zip(time_set[::2], time_set[1::2]):
-                if 0.9 < (t2 - t1) < 1.10:
+                if 0.9 < t2 - t1 < 1.10:
                     n_tags += 1
             # There should be exactly 5 AprilTags in a set
             if n_tags == N_APRILTAGS:
@@ -314,3 +307,34 @@ def separate_blocks(diode_df: pd.DataFrame, apriltag_inds: list[int]) -> list[pd
         all_blocks.append(block)
 
     return all_blocks
+
+
+def get_last_event_ind(
+        block_crossings: np.ndarray,
+        block_time: np.ndarray,
+        diode_threshold: int,
+        separator_threshold: int | None,
+        n_valid_blocks: int,
+        n_total_blocks: int,
+) -> int:
+    if separator_threshold is None:
+        last_event_ind = None
+    elif separator_threshold > diode_threshold:
+        last_event_ind = -2
+    elif separator_threshold == diode_threshold:
+        event_crossing_times = block_time[block_crossings[N_EDGES_APRILTAG_SET:]]
+        if event_crossing_times.size // 2 < MIN_TRIALS:
+            return 0
+        event_durations = np.diff(event_crossing_times)[::2]
+        avg_event_duration = np.mean(event_durations)
+        long_durations = np.where(event_durations > (3 * avg_event_duration))[0]
+        if long_durations.size > 0:
+            return long_durations[0] * 2 + N_EDGES_APRILTAG_SET
+        else:
+            return -2
+    else:
+        raise ValueError("The separator_threshold provided is invalid.")
+    if separator_threshold is not None and n_valid_blocks == (n_total_blocks - 1):
+        last_event_ind = -1
+
+    return last_event_ind
