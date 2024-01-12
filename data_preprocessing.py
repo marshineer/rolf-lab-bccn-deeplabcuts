@@ -187,7 +187,6 @@ def add_missing_gaze_rows(gaze_data: pd.DataFrame, plot_result: bool) -> pd.Data
 
     # Find the median time step in the data
     dt_median = gaze_data.time.diff().median()
-    print(f"Median dt: {dt_median}")
 
     # Interpolate missing frames in gaze data
     gaze_data_updated = gaze_data.copy()
