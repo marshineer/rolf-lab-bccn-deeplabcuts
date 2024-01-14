@@ -28,29 +28,13 @@ N_APRILTAGS_MAX = 4
 # AprilTag detection constants
 PHONE_TAG_IDS = [1, 2, 3]
 APPARATUS_TAG_IDS = [40, 30, 10]
-N_FRAME_BUFFER = 12  # 30 fps -> 12 frames ~ 0.4s
-# APRILTAG_KWARGS = {
-#     "quad_decimate": 3.0,
-#     "decode_sharpening": 0.25,
-# }
+N_FRAME_BUFFER = 6  # 30 fps -> 3 frames ~ 0.1s
+MIN_SET_LEN = 8.9
+MAX_SET_LEN = 9.3
 
 # Hand tracking constants
 INDEX_FINGER_TIP_IDX = 8
 HAND_LANDMARK_CONNECTIONS = mp.hands.HAND_CONNECTIONS
-# HAND_LANDMARKS = {
-#     "Index Finger Tip": 8,
-#     "Index Finger Base": 5,
-#     "Wrist": 0,
-# }
-# MEDIAPIPE_KWARGS = {
-#     "max_num_hands": 2,
-#     "model_complexity": 1,
-#     "min_detection_confidence": 0.5,
-#     "min_tracking_confidence": 0.5,
-# }
-
-# # Data processing constants
-# REFERENCE_TAG_ORDER = [40, 30, 10, 20]
 
 
 @dataclass()
@@ -71,6 +55,8 @@ class SessionConfig:
     n_blocks: int
     diode_threshold: int
     separator_threshold: int | None
+    skip_valid_blocks: list[int] = field(default_factory=list)
+    extra_apriltag_blocks: list[int] = field(default_factory=list)
 
 
 class SessionData:
@@ -108,7 +94,6 @@ class SessionData:
             self,
             participant_id: str,
             session_id: str,
-            # n_blocks: int,
             video_time: np.ndarray,
             tracked_landmarks: dict[str, int],
             diode_df_blocks: list[pd.DataFrame],
@@ -122,8 +107,6 @@ class SessionData:
         self.session_id: str = session_id
         self.saved_block_inds: list[int] = []
         self.last_frame_saved: int = -1
-        # self.n_blocks: int = n_blocks
-        # self.block_cnt: int = -1
         self.n_frames: int = video_time.size
         self.tracked_landmark_ids: list[int] = list(tracked_landmarks.values())
         self.tracked_landmark_names: list[str] = list(tracked_landmarks.keys())
@@ -310,6 +293,7 @@ class BlockVariables:
     block_video: cv2.VideoWriter = None
 
     apriltag_cnt: int = -1
+    n_apriltag_max: int = N_APRILTAGS_MAX
     apriltag_detected: bool = False
     apriltag_last_frame: int = -1
 
@@ -420,7 +404,8 @@ class VideoProcessingPipeline:
                                                     session_config.diode_threshold,
                                                     session_config.separator_threshold,
                                                     session_config.n_blocks,
-                                                    # True,
+                                                    skip_blocks=session_config.skip_valid_blocks,
+                                                    extra_apriltag_blocks=session_config.extra_apriltag_blocks,
                                                 )
         self.valid_block_inds: list[int] = block_inds
         self.diode_df_blocks: list[pd.DataFrame] = block_data
@@ -433,6 +418,7 @@ class VideoProcessingPipeline:
         # AprilTag detection variables
         self.apriltag_detector: Detector = Detector(**pipeline_config.apriltag_kwargs)
         self.apriltag_kwargs: dict[str, float] = pipeline_config.apriltag_kwargs
+        self.extra_apriltag_blocks = session_config.extra_apriltag_blocks
 
         # Hand tracking variables
         self.tracked_landmarks: dict[str, int] = pipeline_config.tracked_hand_landmarks
@@ -486,12 +472,6 @@ class VideoProcessingPipeline:
             elif not ret:
                 print("Error retrieving frame. Exiting.")
                 break
-            # if video_frame_cnt == 12000:
-            # if video_frame_cnt == 5469:  # P02-A1
-            # if video_frame_cnt == 5326:  # P17-A1, block 1
-            # if video_frame_cnt == 10099:  # P17-A1, block 2
-            #     print(f"Current frame: {video_frame_cnt}/{self.n_frames}, runtime: {time.time() - run_time_t0:0.2f}")
-            #     break
             if video_frame_cnt % 5000 == 0:
                 print(f"Current frame: {video_frame_cnt}/{self.n_frames}, "
                       f"runtime: {time.time() - run_time_t0_5000:0.2f} seconds")
@@ -564,7 +544,6 @@ class VideoProcessingPipeline:
         if self.n_frames == video_frame_cnt:
             print("No corrupted frames! Hooray!")
         self.video_capture.release()
-        # block_vars.block_video.release()
         cv2.destroyAllWindows()
 
         return session_data
@@ -583,7 +562,7 @@ class VideoProcessingPipeline:
             2. If it is the same AprilTag as was previously detected, this is determined.
             3. If it is the first AprilTag in a block, the block variables are reset.
 
-        If the end of the 5th AprilTag is detected at approximately the correct time,
+        If the end of the 5th (or 6th) AprilTag is detected at approximately the correct time,
         it is a signal that the trials are about to begin.
 
         Parameters
@@ -602,7 +581,7 @@ class VideoProcessingPipeline:
                 if not block_vars.apriltag_detected:  # New AprilTag onset
                     if video_frame_cnt - block_vars.apriltag_last_frame < N_FRAME_BUFFER:  # Missed AprilTag detection
                         self.missed_apriltag_detection(frame_grey)
-                    elif block_vars.apriltag_cnt == N_APRILTAGS_MAX or self.block_cnt < 0:  # New AprilTag set
+                    elif block_vars.apriltag_cnt == block_vars.n_apriltag_max or self.block_cnt < 0:  # New AprilTag set
                         self.block_cnt += 1
                         if self.block_cnt in self.valid_block_inds:  # Reset block data
                             self.reset_block_data(
@@ -612,10 +591,13 @@ class VideoProcessingPipeline:
                             )
                         else:
                             block_vars.apriltag_cnt = 0
+                            block_vars.n_apriltag_max = N_APRILTAGS_MAX
                             block_vars.frame_0 = video_frame_cnt
-                    else:  # Next AprilTag in set (never more than 4)
+                        if self.block_cnt in self.extra_apriltag_blocks:
+                            block_vars.n_apriltag_max = N_APRILTAGS_MAX + 1
+                    else:  # Next AprilTag in set
                         block_vars.apriltag_cnt += 1
-                        assert block_vars.apriltag_cnt <= N_APRILTAGS_MAX
+                        assert block_vars.apriltag_cnt <= block_vars.n_apriltag_max
                 block_vars.apriltag_detected = True
                 block_vars.apriltag_last_frame = video_frame_cnt
                 if self.block_cnt in self.valid_block_inds:
@@ -626,7 +608,7 @@ class VideoProcessingPipeline:
                     # If it is the 5th AprilTag, check that the timing is approximately correct
                     tag_time = session_data.video_time[block_vars.frame_0:video_frame_cnt]
                     print(f"Duration of AprilTag set: {tag_time[-1] - tag_time[0]:0.3f} seconds")
-                    assert 8.9 < (tag_time[-1] - tag_time[0]) < 9.3
+                    assert MIN_SET_LEN < (tag_time[-1] - tag_time[0]) < MAX_SET_LEN
                     block_vars.event_ind = 0
                     if self.block_cnt in self.valid_block_inds:
                         session_data.first_trial_frame.append(block_vars.frame_cnt)
@@ -653,6 +635,7 @@ class VideoProcessingPipeline:
         block_vars.block_id += 1
         assert block_vars.block_id <= len(self.valid_block_inds)
         block_vars.apriltag_cnt = 0
+        block_vars.n_apriltag_max = N_APRILTAGS_MAX
         block_vars.event_ind = -1
         print(f"\nValid block {block_vars.block_id + 1}/{len(self.valid_block_inds)} starting.")
 
@@ -734,7 +717,10 @@ class VideoProcessingPipeline:
                 lowest_y = y_index_tip
 
             # Save the hand landmark position data
-            pointing_hand_pos = tracking_results.multi_hand_landmarks[self.hand_ind].landmark
+            try:
+                pointing_hand_pos = tracking_results.multi_hand_landmarks[self.hand_ind].landmark
+            except IndexError:
+                print("Doesn't work")
             for landmark_id in session_data.tracked_landmark_ids:
                 landmark_pos = pointing_hand_pos[landmark_id]
                 cx, cy = landmark_pos.x * self.pixel_width, landmark_pos.y * self.pixel_height
@@ -772,9 +758,12 @@ class VideoProcessingPipeline:
         # https://docs.opencv.org/3.4/d6/d6e/group__imgproc__draw.html#ga0ad87faebef1039ec957737ecc633b7b
         if block_vars.event_ind < block_vars.event_onsets.size:
             if block_vars.time[block_vars.frame_cnt] > block_vars.event_onsets[block_vars.event_ind]:
-                finger_tip_pos = tracking_results.multi_hand_landmarks[self.hand_ind].landmark[INDEX_FINGER_TIP_IDX]
-                cx = finger_tip_pos.x * self.pixel_width
-                cy = finger_tip_pos.y * self.pixel_height
+                try:
+                    finger_tip_pos = tracking_results.multi_hand_landmarks[self.hand_ind].landmark[INDEX_FINGER_TIP_IDX]
+                    cx = finger_tip_pos.x * self.pixel_width
+                    cy = finger_tip_pos.y * self.pixel_height
+                except TypeError:
+                    cx, cy = 640, 360
                 r_circle = 15
                 cv2.circle(frame_rgb, (int(cx), int(cy) - 50), r_circle, (255, 255, 255), -1)
                 block_vars.event_ind += 1

@@ -131,7 +131,9 @@ def get_block_data(
         diode_df: pd.DataFrame,
         diode_threshold: int,
         separator_threshold: int | None,
-        n_blocks: int = 10,
+        n_blocks: int,
+        skip_blocks: list[int],
+        extra_apriltag_blocks: list[int],
         show_plots: bool = False,
 ) -> tuple[list[pd.DataFrame], list[int], list[np.ndarray]]:
     """Separates the diode data into experimental blocks.
@@ -172,6 +174,8 @@ def get_block_data(
         diode_threshold (int): light diode threshold for all diode events
         separator_threshold (int): light diode threshold for signalling the end of a block
         n_blocks (int): number of valid blocks in the diode data (10 unless otherwise specified)
+        skip_blocks (list[int]): indices of blocks that are invalid (manually check diode data to determine this)
+        extra_apriltag_blocks (list[int]): indices of blocks where AprilTags appears more than 5 times in a set
         show_plots (bool): if True, show plots to visually check the process
 
     Returns
@@ -205,6 +209,8 @@ def get_block_data(
             n_blocks,
         )
         event_onset_inds = block_crossings[N_EDGES_APRILTAG_SET:last_event_ind:2]
+        if i in extra_apriltag_blocks:
+            event_onset_inds = event_onset_inds[1:]
 
         # If there are not enough trials in the block, it is invalid
         if len(event_onset_inds) < MIN_TRIALS:
@@ -236,6 +242,12 @@ def get_block_data(
             ax.plot(valid_blocks[-1].time, valid_blocks[-1].light_value)
             plt.show()
             plt.close()
+
+    # Modify flagged block data
+    for i in skip_blocks:
+        del valid_blocks[i]
+        del valid_block_inds[i]
+        del event_onset_times[i]
 
     assert len(valid_blocks) == n_blocks
 

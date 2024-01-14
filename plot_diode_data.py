@@ -3,7 +3,6 @@ import argparse
 import matplotlib.pyplot as plt
 from utils import get_files_containing, load_diode_data, get_block_data
 from utils_pipeline import SessionConfig
-# from data_preprocessing import separate_diode_blocks
 
 
 def plot_diode_data(participant_id: str = None, session_id: str = None) -> None:
@@ -29,8 +28,7 @@ def plot_diode_data(participant_id: str = None, session_id: str = None) -> None:
         plt.show()
         plt.close()
 
-        # config_path = f"./data/pipeline_data/{participant_id}/{session_id}/config.json"
-        config_path = f"./data/old_unused/cannot_parse_now/{participant_id}/{session_id}/config.json"
+        config_path = f"./data/pipeline_data/{participant_id}/{session_id}/config.json"
         with open(config_path, "r") as fd:
             session_settings = json.load(fd)
             print(session_settings)
@@ -40,7 +38,9 @@ def plot_diode_data(participant_id: str = None, session_id: str = None) -> None:
             sesssion_config.diode_threshold,
             sesssion_config.separator_threshold,
             sesssion_config.n_blocks,
-            True
+            sesssion_config.skip_valid_blocks,
+            sesssion_config.extra_apriltag_blocks,
+            True,
         )
         plt.close(fig1)
 
