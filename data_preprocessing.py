@@ -152,11 +152,6 @@ def preprocess_gaze_data(gaze_path: str, plot_result: bool) -> pd.DataFrame:
     gaze_df.columns = ['time', 'video_frame']
     gaze_df.time = gaze_df.time - gaze_df.time.iloc[0]
     gaze_df = gaze_df.drop_duplicates('video_frame').reset_index(drop=True)
-    if gaze_df.video_frame.iloc[0] != 0:
-        dt_median = gaze_df.time.diff().median()
-        gaze_df.time = gaze_df.time + gaze_df.video_frame.iloc[0] * dt_median
-        gaze_df.loc[-0.5] = [0., 0]
-        gaze_df = gaze_df.sort_index().reset_index(drop=True)
     gaze_df = add_missing_gaze_rows(gaze_df, plot_result)
     gaze_df = gaze_df.astype(column_types)
     return gaze_df
