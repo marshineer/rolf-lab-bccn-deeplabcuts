@@ -28,13 +28,14 @@ N_APRILTAGS_MAX = 4
 # AprilTag detection constants
 PHONE_TAG_IDS = [1, 2, 3]
 APPARATUS_TAG_IDS = [40, 30, 10]
-N_FRAME_BUFFER = 6  # 30 fps -> 3 frames ~ 0.1s
-MIN_SET_LEN = 8.9
-MAX_SET_LEN = 9.3
+N_FRAME_BUFFER = 12  # 30 fps -> 3 frames ~ 0.1s
+MIN_SET_LEN = 8.65
+MAX_SET_LEN = 9.4
 
 # Hand tracking constants
 INDEX_FINGER_TIP_IDX = 8
 HAND_LANDMARK_CONNECTIONS = mp.hands.HAND_CONNECTIONS
+MIN_POS = 0.1
 
 
 @dataclass()
@@ -162,12 +163,12 @@ class SessionData:
             # ref_x, ref_y = self.interpolate_pos(time_vec, ref_pos[reference_tag_id])
             interp_ref_pos = {}
             for tag_id in APPARATUS_TAG_IDS:
-                interp_ref_pos[tag_id] = np.zeros((2, time_vec))
+                # interp_ref_pos[tag_id] = np.zeros((2, time_vec))
                 interp_ref_pos[tag_id] = self.interpolate_pos(time_vec, ref_pos[tag_id])
                 # ref_x, ref_y = self.interpolate_pos(time_vec, ref_pos[tag_id])
                 # interp_ref_pos[tag_id] = np.stack((ref_x, ref_y))
             # TODO: Rotate the frame to be square to the apparatus' AprilTags
-            rotation_matrices, out_shape = self.get_rotation_mat(interp_ref_pos, reference_tag_id)
+            rotation_matrices, reference_pos_rot = self.get_rotation_mat(interp_ref_pos, reference_tag_id)
 
             fig, ax = plt.subplots(1, 1, figsize=(10, 6))
             relative_lm_pos = {}
@@ -182,13 +183,21 @@ class SessionData:
                 # https://learn.microsoft.com/en-us/dotnet/desktop/winforms/advanced/why-transformation-order-is-significant?view=netframeworkdesktop-4.8#:~:text=The%20matrix%20multiplication%20is%20done,%2C%20then%20rotate%2C%20then%20translate.
                 # rel_x, rel_y = lm_x[ind0:] - ref_x[ind0:], lm_y[ind0:] - ref_y[ind0:]
                 # relative_lm_pos[lm] = np.stack((lm_x[ind0:] - ref_x[ind0:], lm_y[ind0:] - ref_y[ind0:]))
-                rel_xy = lm_xy[:, ind0:] - interp_ref_pos[reference_tag_id][:, ind0:]
-                relative_lm_pos[lm] = np.matmul(rel_xy, rotation_matrices, out=out_shape)
+                # rel_xy = lm_xy[:, ind0:] - interp_ref_pos[reference_tag_id][:, ind0:]
+                rel_xy = lm_xy - interp_ref_pos[reference_tag_id]
+                print(rel_xy.T.shape)
+                print(rotation_matrices.shape)
+                print(reference_pos_rot.shape)
+                relative_lm_pos[lm] = np.einsum("pmn, pn -> pm", rotation_matrices, rel_xy.T)
+                print(relative_lm_pos[lm].shape)
                 # TODO: Apply the rotation to the hand landmark positions
                 #  - use np.matmul() to multiply the (n, m, p) rotation matrix by the (n, p) position data in one step
                 if show_plot:
-                    ax.plot(time_vec[ind0:], self.hand_landmark_pos_trans[lm][0, :], label=f"X: {lbl}")
-                    ax.plot(time_vec[ind0:], self.hand_landmark_pos_trans[lm][1, :], label=f"Y: {lbl}")
+                    print(time_vec.shape)
+                    # ax.plot(time_vec[ind0:], self.hand_landmark_pos_trans[lm][ind0:, 0], label=f"X: {lbl}")
+                    # ax.plot(time_vec[ind0:], self.hand_landmark_pos_trans[lm][ind0:, 1], label=f"Y: {lbl}")
+                    ax.plot(time_vec[ind0:], relative_lm_pos[lm][ind0:, 0], label=f"X: {lbl}")
+                    ax.plot(time_vec[ind0:], relative_lm_pos[lm][ind0:, 1], label=f"Y: {lbl}")
             ax.legend()
             if show_plot:
                 plt.show()
@@ -197,13 +206,17 @@ class SessionData:
 
     # TODO: Complete the logic for this function
     @staticmethod
-    def get_reference_id(reference_tag_pos: dict[int, np.ndarray]) -> int:
+    def get_reference_id(reference_tag_pos_all: dict[int, np.ndarray]) -> int:
         """Determines which AprilTag attached to the frame is visible in the most frames."""
 
         # Check time series for all AprilTags
         # If tag 40 is visible for most of the session (and has no gaps bigger than X frames), interpolate and use it
         # Otherwise, determine which tag has the fewest missing frames
-        reference_tag_id = APPARATUS_TAG_IDS[0]
+        n_missing_frames = reference_tag_pos_all[APPARATUS_TAG_IDS[0]].shape[1]
+        reference_tag_id = None
+        for tag_id, reference_tag_pos in reference_tag_pos_all.items():
+            if sum(reference_tag_pos[0, :] < MIN_POS) < n_missing_frames:
+                reference_tag_id = tag_id
         return reference_tag_id
 
     @staticmethod
@@ -219,12 +232,11 @@ class SessionData:
         Returns
             x_interp (np.ndarray): the interpolated x values of the data
             y_interp (np.ndarray): the interpolated y values of the data
-            y_interp (np.ndarray): the interpolated x- and y-values of the data
+            np.ndarray: the interpolated x- and y-values of the data
         """
 
         # TODO: what happens when there are big gaps in the data (i.e. AprilTags missing for many frames)?
-        min_value = 0.1
-        interp_mask = (position_data[0, :] > min_value) & (position_data[1, :] > min_value)
+        interp_mask = (position_data[0, :] > MIN_POS) & (position_data[1, :] > MIN_POS)
         x_interp = np.interp(time_data, time_data[interp_mask], position_data[0, :][interp_mask])
         y_interp = np.interp(time_data, time_data[interp_mask], position_data[1, :][interp_mask])
         # TODO: maybe stack x and y before returning (I think in all cases, they need to be stacked anyway)
@@ -241,17 +253,23 @@ class SessionData:
 
         # Calculate the rotation matrix, based on the top-left corner of three AprilTags (40, 30, 10)
         pos_shape = reference_tag_pos[reference_tag_id].shape
-        # rot_ref_pos = np.zeros(pos_shape)
+        rot_ref_pos = np.zeros(pos_shape)
         rotation_matrices = np.zeros((pos_shape[1], pos_shape[0], pos_shape[0]))
         for i in range(pos_shape[1]):
-            frame_i_pos = {}
-            for tag_id in APPARATUS_TAG_IDS:
-                frame_i_pos[tag_id] = reference_tag_pos[tag_id][:, i]
-            x_vec = np.ndarray([frame_i_pos[10][0] - frame_i_pos[40][0], frame_i_pos[10][1] - frame_i_pos[40][1]])
-            y_vec = np.ndarray([frame_i_pos[30][0] - frame_i_pos[40][0], frame_i_pos[30][1] - frame_i_pos[40][1]])
-            rot_mat = np.identity(x_vec.size)
+            # frame_i_pos = {}
+            # for tag_id in APPARATUS_TAG_IDS:
+            #     frame_i_pos[tag_id] = reference_tag_pos[tag_id][:, i]
+            # x_vec = np.ndarray([frame_i_pos[10][0] - frame_i_pos[40][0], frame_i_pos[10][1] - frame_i_pos[40][1]])
+            # y_vec = np.ndarray([frame_i_pos[30][0] - frame_i_pos[40][0], frame_i_pos[30][1] - frame_i_pos[40][1]])
+            x_vec = np.array([reference_tag_pos[10][0, i] - reference_tag_pos[40][0, i],
+                              reference_tag_pos[10][1, i] - reference_tag_pos[40][1, i]])
+            y_vec = np.array([reference_tag_pos[30][0, i] - reference_tag_pos[40][0, i],
+                              reference_tag_pos[30][1, i] - reference_tag_pos[40][1, i]])
+            # rotation_matrices[i, :, 0] = x_vec
+            # rotation_matrices[i, :, 1] = y_vec
+            rot_mat = np.array([x_vec, y_vec]).T
+            rot_ref_pos[:, i] = rot_mat @ reference_tag_pos[reference_tag_id][:, i]  # TODO: check this order is correct
             rotation_matrices[i, :, :] = rot_mat
-            # rot_ref_pos[i, :] = reference_tag_pos[reference_tag_id][i] @ rot_mat  # TODO: check this order is correct
 
         # TODO: I think there's a better way to format this data
         #  - I still need to rotation the reference position after calculating the rotation matrix,
@@ -271,7 +289,7 @@ class SessionData:
         #     rot_mat = np.identity(x_vec.size)
         #     # Apply the rotation matrix to the reference coordinates
         #     pass
-        return rotation_matrices, np.zeros(pos_shape)
+        return rotation_matrices, rot_ref_pos
 
     # TODO: When should smoothing be done? After finding relative position?
     @staticmethod
@@ -640,7 +658,6 @@ class VideoProcessingPipeline:
         print(f"\nValid block {block_vars.block_id + 1}/{len(self.valid_block_inds)} starting.")
 
         # First (frame_0) and last (frame_1) video frames of block
-        # block_vars.time = session_data.diode_df_blocks[block_vars.block_id].time.to_numpy('float', copy=True)
         block_vars.frame_0 = video_frame_cnt
         block_duration = session_data.diode_df_blocks[block_vars.block_id].time.iloc[-1]
         block_end_time = session_data.video_time[block_vars.frame_0] + block_duration
@@ -650,7 +667,7 @@ class VideoProcessingPipeline:
         print(f"First and last block frames are {block_vars.frame_0} and {block_vars.frame_1}")
 
         # Block time series
-        block_vars.time = session_data.video_time[block_vars.frame_0:block_vars.frame_1].squeeze()
+        block_vars.time = session_data.video_time[block_vars.frame_0:block_vars.frame_1].squeeze().copy()
         block_vars.time -= block_vars.time[0]
         session_data.block_times.append(block_vars.time)
         n_inds_block = block_vars.frame_1 - block_vars.frame_0
@@ -709,7 +726,7 @@ class VideoProcessingPipeline:
         # Get the positions of all relevant hand landmarks
         if tracking_results.multi_hand_landmarks is not None:
             # Track the hand that is highest on the screen (lowest y-value)
-            lowest_y = self.pixel_height
+            lowest_y = 2 * self.pixel_height
             for ind, hand_lm in enumerate(tracking_results.multi_hand_landmarks):
                 y_index_tip = hand_lm.landmark[INDEX_FINGER_TIP_IDX].y * self.pixel_height
                 if y_index_tip < lowest_y:
