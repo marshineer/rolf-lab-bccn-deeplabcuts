@@ -227,7 +227,7 @@ if __name__ == "__main__":
     scale_matrix = get_scaling_matrix(reference_data.reference_pos_abs[0], 0, reference_data.apparatus_tag_ids)
 
     fpaths, files = get_files_containing("data/pipeline_data", "pipeline_data.pkl")
-    for fpath, file in zip(fpaths[:5], files[:5]):
+    for fpath, file in zip(fpaths, files):
         # Load the session data
         participant_id, session_id = fpath.split("/")[-2:]
         session_data = load_session_data(participant_id, session_id)

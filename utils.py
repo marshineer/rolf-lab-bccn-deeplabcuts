@@ -60,15 +60,27 @@ def distance_2d(x1: float, y1: float, x2: float = 0, y2: float = 0):
 def get_basis_vectors(
         reference_coordinates: dict[int, np.ndarray],
         index: int,
-        reference_points: list[int],
+        reference_tag_ids: list[int],
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Calculates the basis vectors representing the apparatus frame."""
+    """Calculates the basis vectors representing the apparatus frame.
 
-    origin, point_v1, point_v2 = reference_points
-    basis_v1 = np.array([reference_coordinates[point_v1][0, index] - reference_coordinates[origin][0, index],
-                         reference_coordinates[point_v1][1, index] - reference_coordinates[origin][1, index]])
-    basis_v2 = np.array([reference_coordinates[point_v2][0, index] - reference_coordinates[origin][0, index],
-                         reference_coordinates[point_v2][1, index] - reference_coordinates[origin][1, index]])
+    These basis vectors represent a frame of reference defined by the origin and two points.
+
+    Parameters
+        reference_coordinates (dict[int, np.ndarray]): top-left corner coordinates of the three reference AprilTags
+        index (int): video frame index to calculate for
+        reference_tag_ids (list[int]): AprilTag IDs used as reference points (origin, y-dir, x-dir)
+
+    Returns
+        basis_v1 (np.ndarray): basis vector in the x-direction
+        basis_v2 (np.ndarray): basis vector in the y-direction
+    """
+
+    origin, point_y, point_x = reference_tag_ids
+    basis_v1 = np.array([reference_coordinates[point_x][0, index] - reference_coordinates[origin][0, index],
+                         reference_coordinates[point_x][1, index] - reference_coordinates[origin][1, index]])
+    basis_v2 = np.array([reference_coordinates[point_y][0, index] - reference_coordinates[origin][0, index],
+                         reference_coordinates[point_y][1, index] - reference_coordinates[origin][1, index]])
 
     return basis_v1, basis_v2
 
@@ -186,7 +198,7 @@ def load_postprocessing_config(config_path: str, print_config: bool = True) -> P
     Returns
         (PostprocessingConfig): configuration dataclass for a particular session's post-processing
     """
-    with open(os.path.join(config_path, "post_config.json"), "r") as fd:
+    with open(os.path.join(config_path, "config_post.json"), "r") as fd:
         processing_settings = json.load(fd)
         if print_config:
             print(processing_settings)
