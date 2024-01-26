@@ -4,7 +4,7 @@ import time
 import pickle
 from pathlib import Path
 from typing import NamedTuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import mediapipe.python.solutions as mp
 from pupil_apriltags import Detector, Detection
 
+from config_dataclasses import PipelineConfig, SessionConfig
 from utils import (
     get_block_data,
     get_fourcc,
@@ -27,7 +28,6 @@ N_APRILTAGS_MAX = 4
 
 # AprilTag detection constants
 PHONE_TAG_IDS = [1, 2, 3]
-APPARATUS_TAG_IDS = [40, 30, 10]
 N_FRAME_BUFFER = 12  # 30 fps -> 3 frames ~ 0.1s
 MIN_SET_LEN = 8.65
 MAX_SET_LEN = 9.4
@@ -35,31 +35,10 @@ MAX_SET_LEN = 9.4
 # Hand tracking constants
 INDEX_FINGER_TIP_IDX = 8
 HAND_LANDMARK_CONNECTIONS = mp.hands.HAND_CONNECTIONS
-MIN_POS = 0.1
 
 
-@dataclass()
-class PipelineConfig:
-    save_data: bool
-    show_video: bool
-    visual_plot_check: bool
-    overwrite_data: bool
-    apriltag_kwargs: dict[str, float]
-    mediapipe_kwargs: dict[str, int | float]
-    tracked_hand_landmarks: dict[str, int]
-
-
-@dataclass()
-class SessionConfig:
-    participant_id: str
-    session_id: str
-    n_blocks: int
-    diode_threshold: int
-    separator_threshold: int | None
-    skip_valid_blocks: list[int] = field(default_factory=list)
-    extra_apriltag_blocks: list[int] = field(default_factory=list)
-
-
+# TODO: convert this to a dataclass
+#  - Save all data as JSONs (convert existing pickle files to JSON)
 class SessionData:
     """This class stores all the data processed by the pipeline.
 
@@ -78,6 +57,7 @@ class SessionData:
         tracked_landmark_names (list[str]): names of the tracked hand landmarks
         apriltag_kwargs (dict[str, float]): key word arguments for the AprilTag detector class
         mediapipe_kwargs (dict[str, int | float]): key word arguments for hand tracker class
+        apparatus_tag_ids: list[int]: AprilTag IDs used to identify the apparatus frame of reference
         video_time (np.ndarray): video frame timestamps for the full-length video
         block_frames (list[tuple[int, int]]): first and last frames of each block
         block_times (list[np.ndarray]): video frame timestamps for each block
@@ -85,8 +65,8 @@ class SessionData:
         first_trial_frame (list[int]): last video frome of the five AprilTag set, used to trim hand position data
         hand_landmark_pos_abs (list[dict[int, np.ndarray]]): absolute position data of the hand landmarks
         reference_pos_abs (list[dict[int, np.ndarray]]): absolute position of the apparatus AprilTags (IDs 40, 30, 10)
-        hand_landmark_pos_trans (list[dict[int, np.ndarray]]): transformed position data of the hand landmarks
-        reference_pos_rot (list[np.ndarray]): rotated and interpolated position of reference AprilTag's top-left corner
+        # hand_landmark_pos_trans (list[dict[int, np.ndarray]]): transformed position data of the hand landmarks
+        # reference_pos_rot (list[np.ndarray]): rotated and interpolated position of reference AprilTag's top-left corner
         diode_df_blocks (list[pd.DataFrame]): light diode sensor data, collected from the phone screen
         event_onsets (list[np.ndarray]): event onset times for each block
     """
@@ -101,204 +81,56 @@ class SessionData:
             event_onsets: list[np.ndarray],
             apriltag_kwargs: dict[str, float],
             mediapipe_kwargs: dict[str, int | float],
+            apparatus_tag_ids: list[int],
     ):
 
         # Session parameters
         self.participant_id: str = participant_id
         self.session_id: str = session_id
-        self.saved_block_inds: list[int] = []
-        self.last_frame_saved: int = -1
         self.n_frames: int = video_time.size
         self.tracked_landmark_ids: list[int] = list(tracked_landmarks.values())
         self.tracked_landmark_names: list[str] = list(tracked_landmarks.keys())
         self.apriltag_detector_kwargs: dict[str, float] = apriltag_kwargs
         self.mediapipe_kwargs: dict[str, int | float] = mediapipe_kwargs
+        self.apparatus_tag_ids: list[int] = apparatus_tag_ids
 
-        # Full video data
+        # Pipeline interruption/restart parameters
+        self.saved_block_inds: list[int] = []
+        self.last_frame_saved: int = -1
+
+        # Full video time data
         self.video_time: np.ndarray = video_time
 
         # Block specific data
         self.block_frames: list[tuple[int, int]] = []
         self.block_times: list[np.ndarray] = []
         self.apriltag123_visible: list[np.ndarray] = []
-        self.first_trial_frame: list[int] = []
+        self.first_trial_frame: dict[int, int] = {}
         self.hand_landmark_pos_abs: list[dict[int, np.ndarray]] = []
         self.reference_pos_abs: list[dict[int, np.ndarray]] = []
-        self.hand_landmark_pos_trans: list[dict[int, np.ndarray]] = []
-        self.reference_pos_rot: list[np.ndarray] = []
+        # self.time_trans: list[np.ndarray | None] = []
+        # self.hand_landmark_pos_trans: list[dict[int, np.ndarray] | None] = []
+        # self.reference_pos_rot: list[dict[int, np.ndarray] | None] = []
         self.diode_df_blocks: list[pd.DataFrame] = diode_df_blocks
         self.event_onsets_blocks: list[np.ndarray] = event_onsets
 
-    def relative_hand_positions(self, show_plot: bool) -> None:
-        """Calculates hand positions relative to a reference point.
 
-        Since the head-mounted camera is constantly moving, the hand positions are calculated relative
-        to a reference point. In this case, the top-left corner of the top-left AprilTag that is
-        affixed to the apparatus frame is chosen. It was chosen because it is considered least likely
-        to be covered during the trials (assuming the two_part_videos use their right index finger).
+def load_session_data(participant_id: str, session_id: str) -> SessionData | None:
+    """Loads the session pipeline data, if it exists.
 
-        Since the participant's hands are often off camera while the AprilTags are shown on the phone,
-        this method trims the hand landmark and reference position data to begin when the last AprilTag
-        disappears. Furthermore, the data is checked for frame where the hands or reference position is
-        not tracked, and interpolates the positions for these frames. This assumption is reasonable when
-        only a few consecutive frames are lost, due to the smoothness/continuity of video position in
-        time.
+    Parameters
+        participant_id (str): unique participant identifier "PXX"
+        session_id (str): session identifier ["A1", "A2", "B1", "B2"]
 
-        Parameters
-            shot_plot (bool): if True, plot the relative hand landmark positions
-        """
-
-        # itr_lists = zip(
-        #     self.hand_landmark_pos_abs,
-        #     self.reference_pos_abs,
-        #     self.block_times,
-        #     self.first_trial_frame
-        # )
-        itr_lists = zip(self.hand_landmark_pos_abs, self.reference_pos_abs, self.block_times, self.first_trial_frame)
-        for lm_pos, ref_pos, time_vec, ind0 in itr_lists:
-            # TODO: Determine which AprilTag is the best reference
-            reference_tag_id = self.get_reference_id(ref_pos)
-            # Interpolate the missing reference AprilTag positions
-            # # ref_x, ref_y = self.interpolate_pos(time_vec, ref_xy_rot)
-            # ref_x, ref_y = self.interpolate_pos(time_vec, ref_pos[reference_tag_id])
-            interp_ref_pos = {}
-            for tag_id in APPARATUS_TAG_IDS:
-                # interp_ref_pos[tag_id] = np.zeros((2, time_vec))
-                interp_ref_pos[tag_id] = self.interpolate_pos(time_vec, ref_pos[tag_id])
-                # ref_x, ref_y = self.interpolate_pos(time_vec, ref_pos[tag_id])
-                # interp_ref_pos[tag_id] = np.stack((ref_x, ref_y))
-            # TODO: Rotate the frame to be square to the apparatus' AprilTags
-            rotation_matrices, reference_pos_rot = self.get_rotation_mat(interp_ref_pos, reference_tag_id)
-
-            fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-            relative_lm_pos = {}
-            for lm, lbl in zip(self.tracked_landmark_ids, self.tracked_landmark_names):
-                # Interpolate and calculate hand landmark positions, relative to the reference
-                # lm_x, lm_y = self.interpolate_pos(time_vec, lm_pos[lm])
-                lm_xy = self.interpolate_pos(time_vec, lm_pos[lm])
-                # TODO: Plot the interpolated position data to show the off-axis skew
-                # TODO: Do the translation first
-                #  - I want to move the origin, then rotate about the new origin to align with the frame
-                # https://gamedev.stackexchange.com/questions/16719/what-is-the-correct-order-to-multiply-scale-rotation-and-translation-matrices-f
-                # https://learn.microsoft.com/en-us/dotnet/desktop/winforms/advanced/why-transformation-order-is-significant?view=netframeworkdesktop-4.8#:~:text=The%20matrix%20multiplication%20is%20done,%2C%20then%20rotate%2C%20then%20translate.
-                # rel_x, rel_y = lm_x[ind0:] - ref_x[ind0:], lm_y[ind0:] - ref_y[ind0:]
-                # relative_lm_pos[lm] = np.stack((lm_x[ind0:] - ref_x[ind0:], lm_y[ind0:] - ref_y[ind0:]))
-                # rel_xy = lm_xy[:, ind0:] - interp_ref_pos[reference_tag_id][:, ind0:]
-                rel_xy = lm_xy - interp_ref_pos[reference_tag_id]
-                print(rel_xy.T.shape)
-                print(rotation_matrices.shape)
-                print(reference_pos_rot.shape)
-                relative_lm_pos[lm] = np.einsum("pmn, pn -> pm", rotation_matrices, rel_xy.T)
-                print(relative_lm_pos[lm].shape)
-                # TODO: Apply the rotation to the hand landmark positions
-                #  - use np.matmul() to multiply the (n, m, p) rotation matrix by the (n, p) position data in one step
-                if show_plot:
-                    print(time_vec.shape)
-                    # ax.plot(time_vec[ind0:], self.hand_landmark_pos_trans[lm][ind0:, 0], label=f"X: {lbl}")
-                    # ax.plot(time_vec[ind0:], self.hand_landmark_pos_trans[lm][ind0:, 1], label=f"Y: {lbl}")
-                    ax.plot(time_vec[ind0:], relative_lm_pos[lm][ind0:, 0], label=f"X: {lbl}")
-                    ax.plot(time_vec[ind0:], relative_lm_pos[lm][ind0:, 1], label=f"Y: {lbl}")
-            ax.legend()
-            if show_plot:
-                plt.show()
-            plt.close()
-            self.hand_landmark_pos_trans.append(relative_lm_pos)
-
-    # TODO: Complete the logic for this function
-    @staticmethod
-    def get_reference_id(reference_tag_pos_all: dict[int, np.ndarray]) -> int:
-        """Determines which AprilTag attached to the frame is visible in the most frames."""
-
-        # Check time series for all AprilTags
-        # If tag 40 is visible for most of the session (and has no gaps bigger than X frames), interpolate and use it
-        # Otherwise, determine which tag has the fewest missing frames
-        n_missing_frames = reference_tag_pos_all[APPARATUS_TAG_IDS[0]].shape[1]
-        reference_tag_id = None
-        for tag_id, reference_tag_pos in reference_tag_pos_all.items():
-            if sum(reference_tag_pos[0, :] < MIN_POS) < n_missing_frames:
-                reference_tag_id = tag_id
-        return reference_tag_id
-
-    @staticmethod
-    # def interpolate_pos(time_data: np.ndarray, position_data: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    def interpolate_pos(time_data: np.ndarray, position_data: np.ndarray) -> np.ndarray:
-
-        """Interpolates the hand landmark and reference position data.
-
-        Parameters
-            time_data (np.ndarray): the timestamp for each block frame
-            position_data (np.ndarray): the x-y position for each block frame
-
-        Returns
-            x_interp (np.ndarray): the interpolated x values of the data
-            y_interp (np.ndarray): the interpolated y values of the data
-            np.ndarray: the interpolated x- and y-values of the data
-        """
-
-        # TODO: what happens when there are big gaps in the data (i.e. AprilTags missing for many frames)?
-        interp_mask = (position_data[0, :] > MIN_POS) & (position_data[1, :] > MIN_POS)
-        x_interp = np.interp(time_data, time_data[interp_mask], position_data[0, :][interp_mask])
-        y_interp = np.interp(time_data, time_data[interp_mask], position_data[1, :][interp_mask])
-        # TODO: maybe stack x and y before returning (I think in all cases, they need to be stacked anyway)
-        return np.stack((x_interp, y_interp))
-        # return x_interp, y_interp
-
-    # TODO: Complete the logic for this function
-    @staticmethod
-    def get_rotation_mat(
-            reference_tag_pos: dict[int, np.ndarray],
-            reference_tag_id: int,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Calculate and apply rotation matrix to x-y coordinate data."""
-
-        # Calculate the rotation matrix, based on the top-left corner of three AprilTags (40, 30, 10)
-        pos_shape = reference_tag_pos[reference_tag_id].shape
-        rot_ref_pos = np.zeros(pos_shape)
-        rotation_matrices = np.zeros((pos_shape[1], pos_shape[0], pos_shape[0]))
-        for i in range(pos_shape[1]):
-            # frame_i_pos = {}
-            # for tag_id in APPARATUS_TAG_IDS:
-            #     frame_i_pos[tag_id] = reference_tag_pos[tag_id][:, i]
-            # x_vec = np.ndarray([frame_i_pos[10][0] - frame_i_pos[40][0], frame_i_pos[10][1] - frame_i_pos[40][1]])
-            # y_vec = np.ndarray([frame_i_pos[30][0] - frame_i_pos[40][0], frame_i_pos[30][1] - frame_i_pos[40][1]])
-            x_vec = np.array([reference_tag_pos[10][0, i] - reference_tag_pos[40][0, i],
-                              reference_tag_pos[10][1, i] - reference_tag_pos[40][1, i]])
-            y_vec = np.array([reference_tag_pos[30][0, i] - reference_tag_pos[40][0, i],
-                              reference_tag_pos[30][1, i] - reference_tag_pos[40][1, i]])
-            # rotation_matrices[i, :, 0] = x_vec
-            # rotation_matrices[i, :, 1] = y_vec
-            rot_mat = np.array([x_vec, y_vec]).T
-            rot_ref_pos[:, i] = rot_mat @ reference_tag_pos[reference_tag_id][:, i]  # TODO: check this order is correct
-            rotation_matrices[i, :, :] = rot_mat
-
-        # TODO: I think there's a better way to format this data
-        #  - I still need to rotation the reference position after calculating the rotation matrix,
-        #       but I can't hard code which tag_id corresponds to the reference
-        # itr_pos = zip(
-        #     reference_tag_pos[40][0, :],
-        #     reference_tag_pos[40][1, :],
-        #     reference_tag_pos[30][0, :],
-        #     reference_tag_pos[30][1, :],
-        #     reference_tag_pos[10][0, :],
-        #     reference_tag_pos[10][1, :],
-        # )
-        # for x_40, y_40, x_30, y_30, x_10, y_10 in itr_pos:
-        #     # Calculate the rotation matrix for each frame
-        #     x_vec = np.ndarray([x_10 - x_40, y_10 - y_40])
-        #     y_vec = np.ndarray([x_30 - x_40, y_30 - y_40])
-        #     rot_mat = np.identity(x_vec.size)
-        #     # Apply the rotation matrix to the reference coordinates
-        #     pass
-        return rotation_matrices, rot_ref_pos
-
-    # TODO: When should smoothing be done? After finding relative position?
-    @staticmethod
-    def smooth_pos_data():
-        pass
-
-    @staticmethod
-    def calculate_velocity():
-        pass
+    Returns
+        (SessionData): data generated by the video processing pipeline
+    """
+    session_path = f"data/pipeline_data/{participant_id}/{session_id}/{participant_id}_{session_id}_pipeline_data.pkl"
+    if os.path.exists(session_path):
+        with open(session_path, "rb") as f:
+            return pickle.load(f)
+    else:
+        return None
 
 
 @dataclass
@@ -437,6 +269,7 @@ class VideoProcessingPipeline:
         self.apriltag_detector: Detector = Detector(**pipeline_config.apriltag_kwargs)
         self.apriltag_kwargs: dict[str, float] = pipeline_config.apriltag_kwargs
         self.extra_apriltag_blocks = session_config.extra_apriltag_blocks
+        self.ref_tag_ids = session_config.apparatus_tag_ids
 
         # Hand tracking variables
         self.tracked_landmarks: dict[str, int] = pipeline_config.tracked_hand_landmarks
@@ -466,6 +299,7 @@ class VideoProcessingPipeline:
                 self.event_onset_blocks,
                 self.apriltag_kwargs,
                 self.mediapipe_kwargs,
+                self.ref_tag_ids,
             )
         else:
             with open(self.data_path, "rb") as f:
@@ -524,7 +358,7 @@ class VideoProcessingPipeline:
 
                 # Update reference points
                 for tag in tags:
-                    if tag.tag_id in APPARATUS_TAG_IDS:
+                    if tag.tag_id in self.ref_tag_ids:
                         xy_corner = get_top_left_coords(tag.corners)
                         session_data.reference_pos_abs[-1][tag.tag_id][:, block_vars.frame_cnt] = xy_corner
 
@@ -629,7 +463,7 @@ class VideoProcessingPipeline:
                     assert MIN_SET_LEN < (tag_time[-1] - tag_time[0]) < MAX_SET_LEN
                     block_vars.event_ind = 0
                     if self.block_cnt in self.valid_block_inds:
-                        session_data.first_trial_frame.append(block_vars.frame_cnt)
+                        session_data.first_trial_frame[block_vars.block_id] = block_vars.frame_cnt
                 block_vars.apriltag_detected = False
             break
         return tags
@@ -674,7 +508,7 @@ class VideoProcessingPipeline:
         session_data.apriltag123_visible.append(np.zeros(n_inds_block))
         landmark_pos_dict = {lm: np.zeros((2, n_inds_block)) for lm in session_data.tracked_landmark_ids}
         session_data.hand_landmark_pos_abs.append(landmark_pos_dict)
-        session_data.reference_pos_abs.append({ref: np.zeros((2, n_inds_block)) for ref in APPARATUS_TAG_IDS})
+        session_data.reference_pos_abs.append({ref: np.zeros((2, n_inds_block)) for ref in self.ref_tag_ids})
         block_vars.event_onsets = session_data.event_onsets_blocks[block_vars.block_id]
 
         # OpenCV video writer, used to create block videos
