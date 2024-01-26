@@ -1,9 +1,11 @@
 import os
 import sys
 import cv2
+import json
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from config_dataclasses import PipelineConfig, SessionConfig, PostprocessingConfig
 pd.options.mode.chained_assignment = None
 
 N_EDGES_APRILTAG_SET = 10
@@ -53,6 +55,22 @@ def distance_2d(x1: float, y1: float, x2: float = 0, y2: float = 0):
         dist (float): distance between the points
     """
     return np.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
+
+
+def get_basis_vectors(
+        reference_coordinates: dict[int, np.ndarray],
+        index: int,
+        reference_points: list[int],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Calculates the basis vectors representing the apparatus frame."""
+
+    origin, point_v1, point_v2 = reference_points
+    basis_v1 = np.array([reference_coordinates[point_v1][0, index] - reference_coordinates[origin][0, index],
+                         reference_coordinates[point_v1][1, index] - reference_coordinates[origin][1, index]])
+    basis_v2 = np.array([reference_coordinates[point_v2][0, index] - reference_coordinates[origin][0, index],
+                         reference_coordinates[point_v2][1, index] - reference_coordinates[origin][1, index]])
+
+    return basis_v1, basis_v2
 
 
 def get_files_containing(start_dir: str, string_match: str, string_exclude: str = "XXXXXXXXXX"):
@@ -125,6 +143,54 @@ def load_video_mp4(participant_id: str, session_id: str) -> cv2.VideoCapture:
     """
     video_path = f"data/pipeline_data/{participant_id}/{session_id}/{participant_id}_{session_id}.mp4"
     return cv2.VideoCapture(video_path)
+
+
+def load_pipeline_config(print_config: bool = True) -> PipelineConfig:
+    """Loads the pipeline configuration dataclass from a JSON file.
+
+    Parameters
+        config_path (str): file path to the configuration
+
+    Returns
+        (PipelineConfig): configuration dataclass for the entire pipeline
+    """
+    with open("pipeline_config.json", "r") as fd:
+        pipeline_settings = json.load(fd)
+        if print_config:
+            print(pipeline_settings)
+        return PipelineConfig(**pipeline_settings)
+
+
+def load_session_config(config_path: str, print_config: bool = True) -> SessionConfig:
+    """Loads the session configuration dataclass from a JSON file.
+
+    Parameters
+        config_path (str): file path to the configuration
+
+    Returns
+        (SessionConfig): configuration dataclass for a particular session
+    """
+    with open(os.path.join(config_path, "config.json"), "r") as fd:
+        session_settings = json.load(fd)
+        if print_config:
+            print(session_settings)
+        return SessionConfig(**session_settings)
+
+
+def load_postprocessing_config(config_path: str, print_config: bool = True) -> PostprocessingConfig:
+    """Loads the post-processing configuration dataclass from a JSON file.
+
+    Parameters
+        config_path (str): file path to the configuration
+
+    Returns
+        (PostprocessingConfig): configuration dataclass for a particular session's post-processing
+    """
+    with open(os.path.join(config_path, "post_config.json"), "r") as fd:
+        processing_settings = json.load(fd)
+        if print_config:
+            print(processing_settings)
+        return PostprocessingConfig(**processing_settings)
 
 
 def get_block_data(
@@ -211,6 +277,16 @@ def get_block_data(
         event_onset_inds = block_crossings[N_EDGES_APRILTAG_SET:last_event_ind:2]
         if i in extra_apriltag_blocks:
             event_onset_inds = event_onset_inds[1:]
+        # # TODO: test whether this affects preprocessing of videos
+        # event_times_temp = block_time[event_onset_inds]
+        # event_diffs = np.diff(event_times_temp)
+        # too_close_onsets = np.argwhere(event_diffs < MIN_TRIAL_SEPARATION).squeeze()
+        # if too_close_onsets:
+        #     event_times_temp = np.delete(event_times_temp, too_close_onsets + 1)
+        # # If there are not enough trials in the block, it is invalid
+        # if len(event_times_temp) < MIN_TRIALS:
+        #     continue
+        # event_onset_times.append(event_times_temp)
 
         # If there are not enough trials in the block, it is invalid
         if len(event_onset_inds) < MIN_TRIALS:
@@ -244,7 +320,7 @@ def get_block_data(
             plt.close()
 
     # Modify flagged block data
-    for i in skip_blocks:
+    for i in skip_blocks[::-1]:
         del valid_blocks[i]
         del valid_block_inds[i]
         del event_onset_times[i]
