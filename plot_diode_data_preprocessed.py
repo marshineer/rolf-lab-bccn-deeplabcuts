@@ -1,3 +1,6 @@
+"""This script plots either the full diodes data for every session that has been preprocessed,
+or (if proper arguments are given) it plots the full diode data for a single session, as well as
+the individual block data (including extracted event onset and block end times)."""
 import json
 import argparse
 import matplotlib.pyplot as plt
