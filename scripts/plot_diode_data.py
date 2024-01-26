@@ -1,16 +1,18 @@
 """This script plots either the full diodes data for every session that has been preprocessed,
 or (if proper arguments are given) it plots the full diode data for a single session, as well as
 the individual block data (including extracted event onset and block end times)."""
+
 import json
 import argparse
 import matplotlib.pyplot as plt
-from utils import get_files_containing, load_diode_data, get_block_data
-from utils_pipeline import SessionConfig
+from utils.split_diode_blocks import get_block_data
+from utils.data_loading import get_files_containing, load_diode_data
+from scripts.utils_pipeline import SessionConfig
 
 
 def plot_diode_data(participant_id: str = None, session_id: str = None) -> None:
     if participant_id is None or session_id is None:
-        diode_paths, diode_files = get_files_containing("data/pipeline_data", "diode_sensor.csv")
+        diode_paths, diode_files = get_files_containing("../data/pipeline_data", "diode_sensor.csv")
         for path, file in zip(diode_paths, diode_files):
             participant_id, session_id = file.split("_")[:2]
             diode_df = load_diode_data(participant_id, session_id)

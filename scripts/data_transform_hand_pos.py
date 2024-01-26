@@ -1,12 +1,26 @@
+"""This script must be run after the pipeline. The hand tracking positions that come out of the
+pipeline are in the pixel frame of reference. Therefore, the x-direction is the horizontal direction
+with regards to the video frame, and similarly for the y-direction. Since the participant's head is
+constantly moving, and the position between participants and sessions varies greatly, the hand
+tracking data must be tranformed into a standard frame of reference, in order to be comparable
+between sessions, or even between frames.
+
+This script uses three AprilTags to define a frame of reference that is consistent across all trials.
+The standard unit of this frame of reference is the distance between the top-left corners of the two
+AprilTags at the top of the experimental apparatus (IDs 40 and 10). Since this distance is not the
+same in all video frames, all the position values are scaled to make them consistent and comparable.
+
+There are many video frames where the AprilTags are not on the screen, covered, or undetected for
+some other reason. This will be accounted for in the next step. For now, these missing AprilTag
+reference positions are simply interpolated using the frame before and after the missed detections."""
+
 import os
 import pickle
 import numpy as np
 import matplotlib.pyplot as plt
-from utils import get_files_containing, get_basis_vectors
+from utils.calculations import MIN_POSITION, get_basis_vectors
+from utils.data_loading import get_files_containing
 from utils_pipeline import SessionData, load_session_data
-
-
-MIN_POSITION = 0.1
 
 
 class TransformedHandData:
@@ -32,20 +46,7 @@ class TransformedHandData:
         self.hand_landmarks: dict[int, str] = hand_landmarks
         self.time: list[np.ndarray] = []
         self.hand_position: list[dict[str, np.ndarray]] = []
-        self.hand_speed: list[dict[str, np.ndarray]] = []
         self.ref_pos: list[dict[str, np.ndarray]] = []
-
-    def calculate_hand_speeds(self) -> None:
-        """Calculates the x, y and total speed of the transformed hand position data."""
-
-        for block_time, block_pos in zip(self.time, self.hand_position):
-            lm_speed_dict = {}
-            for lm, pos in block_pos.items():
-                lm_speed_dict[lm] = np.zeros((3, block_time.size - 1))
-                for i in range(pos.shape[0]):
-                    lm_speed_dict[lm][i, :] = calculate_speed(pos[i, :], block_time)
-                lm_speed_dict[lm][-1, :] = np.sqrt(lm_speed_dict[lm][0, :] ** 2 + lm_speed_dict[lm][1, :] ** 2)
-            self.hand_speed.append(lm_speed_dict)
 
 
 def transform_hand_positions(
@@ -148,6 +149,7 @@ def interpolate_pos(time_data: np.ndarray, position_data: np.ndarray) -> np.ndar
     """
 
     if np.sum(position_data) == 0:
+        print("No position data")
         return position_data
     else:
         interp_mask = (position_data[0, :] > MIN_POSITION) & (position_data[1, :] > MIN_POSITION)
@@ -209,20 +211,6 @@ def get_scaling_matrix(
     return np.diag([1 / np.linalg.norm(basis_v1), 1 / np.linalg.norm(basis_v2)])
 
 
-def calculate_speed(time: np.ndarray, position: np.ndarray) -> np.ndarray:
-    """Calculates speed from position data.
-
-    Parameters
-        time (np.ndarray): time vector associated with the postion data
-        position (np.ndarray): single dimension positon data
-
-    Returns
-        (np.ndarray): vector of speed at each time point
-    """
-
-    return np.diff(position) / np.diff(time)
-
-
 if __name__ == "__main__":
     # Initialize the variables used for all participants and sessions
     with open("data/pipeline_data/P17/A1/P17_A1_pipeline_data.pkl", "rb") as f:
@@ -250,9 +238,6 @@ if __name__ == "__main__":
             scale_matrix,
             # {"Index Tip": 8},
         )
-
-        # Calculate the x, y and total speed of the hand landmarks
-        hand_data.calculate_hand_speeds()
 
         # Save the transformed hand data
         with open(os.path.join(fpath, fname), "wb") as f:

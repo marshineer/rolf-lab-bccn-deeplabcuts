@@ -12,15 +12,10 @@ import matplotlib.pyplot as plt
 import mediapipe.python.solutions as mp
 from pupil_apriltags import Detector, Detection
 
-from config_dataclasses import PipelineConfig, SessionConfig
-from utils import (
-    get_block_data,
-    get_fourcc,
-    get_top_left_coords,
-    load_diode_data,
-    load_video_time,
-    load_video_mp4,
-)
+from config.config_dataclasses import PipelineConfig, SessionConfig
+from utils.split_diode_blocks import get_block_data
+from utils.data_loading import load_diode_data, load_video_mp4, load_video_time
+from utils.calculations import get_fourcc, get_top_left_coords
 
 
 # Experiment constants
@@ -63,8 +58,6 @@ class SessionData:
         first_trial_frame (list[int]): last video frome of the five AprilTag set, used to trim hand position data
         hand_landmark_pos_abs (list[dict[int, np.ndarray]]): absolute position data of the hand landmarks
         reference_pos_abs (list[dict[int, np.ndarray]]): absolute position of the apparatus AprilTags (IDs 40, 30, 10)
-        # hand_landmark_pos_trans (list[dict[int, np.ndarray]]): transformed position data of the hand landmarks
-        # reference_pos_rot (list[np.ndarray]): rotated and interpolated position of reference AprilTag's top-left corner
         diode_df_blocks (list[pd.DataFrame]): light diode sensor data, collected from the phone screen
         event_onsets (list[np.ndarray]): event onset times for each block
     """
@@ -106,7 +99,6 @@ class SessionData:
         self.first_trial_frame: dict[int, int] = {}
         self.hand_landmark_pos_abs: list[dict[int, np.ndarray]] = []
         self.reference_pos_abs: list[dict[int, np.ndarray]] = []
-        # self.reference_pos_rot: list[dict[int, np.ndarray] | None] = []
         self.diode_df_blocks: list[pd.DataFrame] = diode_df_blocks
         self.event_onsets_blocks: list[np.ndarray] = event_onsets
 

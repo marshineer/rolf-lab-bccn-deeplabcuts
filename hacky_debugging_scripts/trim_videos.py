@@ -6,7 +6,7 @@ import os
 import cv2
 import time
 import numpy as np
-from utils import load_video_mp4, load_video_time, load_diode_data
+from utils.data_loading import load_video_mp4, load_video_time, load_diode_data
 
 
 trim_data = [

@@ -1,3 +1,7 @@
+"""This is the first script that must be run. It preprocesses the video, gaze, and diode data.
+This formats it such that it can be used in the pipeline, which involves concatenating two-part
+files, changing column names, interpolating missing rows, and zeroing the time."""
+
 import os
 import cv2
 import time
@@ -5,7 +9,7 @@ import argparse
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from utils import get_files_containing
+from utils.data_loading import get_files_containing
 
 
 def concatenate_video_data(froot: str) -> None:
