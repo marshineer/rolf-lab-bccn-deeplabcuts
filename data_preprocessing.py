@@ -1,17 +1,25 @@
 import os
 import cv2
 import time
+import argparse
 import numpy as np
 import pandas as pd
 from pathlib import Path
 from utils import get_files_containing
 
 
-def concatenate_video_data() -> None:
-    """Concatenates all two part session videos."""
+def concatenate_video_data(froot: str) -> None:
+    """Concatenates all two part session videos.
+
+    Parameters
+        froot (str): root directory in which to begin file search
+    """
+
+    if froot is None:
+        froot = "data/original_data/"
 
     # Get the video files and group by session
-    video_paths, video_files = get_files_containing("data/original_data/", ".mp4", "block")
+    video_paths, video_files = get_files_containing(froot, ".mp4", "block")
     video_parts = {path: [] for path in set(video_paths)}
     for dirpath, file in zip(video_paths, video_files):
         video_parts[dirpath].append(file)
@@ -48,6 +56,8 @@ def concatenate_video_data() -> None:
                         break
                     video_frame_cnt += 1
                     new_video.write(frame)
+                vcap.release()
+                cv2.destroyAllWindows()
             print(f"It took {time.time() - run_time_t0:0.2f} seconds to concatenate videos")
             assert video_frame_cnt == video_frame_reported
         elif len(file_list) == 1:
@@ -55,11 +65,18 @@ def concatenate_video_data() -> None:
             os.rename(os.path.join(dirpath, file_list[0]), os.path.join(new_dirpath, file_list[0]))
 
 
-def concatenate_gaze_data() -> None:
-    """Concatenates all two part gaze videos."""
+def concatenate_gaze_data(froot: str) -> None:
+    """Concatenates all two part gaze videos.
+
+    Parameters
+        froot (str): root directory in which to begin file search
+    """
+
+    if froot is None:
+        froot = "data/original_data/"
 
     # Get the gaze files and group by session
-    gaze_paths, gaze_files = get_files_containing("data/original_data/", "gaze_positions")
+    gaze_paths, gaze_files = get_files_containing(froot, "gaze_positions")
     gaze_parts = {path: [] for path in set(gaze_paths)}
     for dirpath, file in zip(gaze_paths, gaze_files):
         gaze_parts[dirpath].append(file)
@@ -85,13 +102,20 @@ def concatenate_gaze_data() -> None:
         combined_gaze_df.time.to_csv(new_filename, index=False)
 
 
-def preprocess_diode_data() -> None:
+def preprocess_diode_data(froot: str) -> None:
     """Preprocesses the light diode sensor data for all two_part_videos and sessions.
 
-    The light diode sensor data is renamed and sessions with multiple files are concatenated."""
+    The light diode sensor data is renamed and sessions with multiple files are concatenated.
+
+    Parameters
+        froot (str): root directory in which to begin file search
+    """
+
+    if froot is None:
+        froot = "data/original_data/"
 
     # Get the light diode files and group by session
-    diode_paths, diode_files = get_files_containing("data/original_data/", "light.csv")
+    diode_paths, diode_files = get_files_containing(froot, "light.csv")
     file_parts = {path: [] for path in set(diode_paths)}
     for dirpath, file in zip(diode_paths, diode_files):
         file_parts[dirpath].append(file)
@@ -151,6 +175,7 @@ def preprocess_gaze_data(gaze_path: str, plot_result: bool) -> pd.DataFrame:
     column_types = {'time': float, 'video_frame': int}
     gaze_df.columns = ['time', 'video_frame']
     gaze_df.time = gaze_df.time - gaze_df.time.iloc[0]
+    gaze_df.video_frame = gaze_df.video_frame - gaze_df.video_frame.iloc[0]
     gaze_df = gaze_df.drop_duplicates('video_frame').reset_index(drop=True)
     gaze_df = add_missing_gaze_rows(gaze_df, plot_result)
     gaze_df = gaze_df.astype(column_types)
@@ -233,6 +258,15 @@ def add_missing_gaze_rows(gaze_data: pd.DataFrame, plot_result: bool) -> pd.Data
 
 
 if __name__ == '__main__':
-    concatenate_video_data()
-    concatenate_gaze_data()
-    preprocess_diode_data()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-f", "--filepath",
+        type=str,
+        default=None,
+        help="Root directory in which to begin file search"
+    )
+    args = parser.parse_args()
+
+    concatenate_video_data(args.filepath)
+    concatenate_gaze_data(args.filepath)
+    preprocess_diode_data(args.filepath)
