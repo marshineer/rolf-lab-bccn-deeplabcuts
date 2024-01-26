@@ -147,11 +147,14 @@ def interpolate_pos(time_data: np.ndarray, position_data: np.ndarray) -> np.ndar
         np.ndarray: the interpolated x- and y-values of the data
     """
 
-    interp_mask = (position_data[0, :] > MIN_POSITION) & (position_data[1, :] > MIN_POSITION)
-    x_interp = np.interp(time_data, time_data[interp_mask], position_data[0, :][interp_mask])
-    y_interp = np.interp(time_data, time_data[interp_mask], position_data[1, :][interp_mask])
+    if np.sum(position_data) == 0:
+        return position_data
+    else:
+        interp_mask = (position_data[0, :] > MIN_POSITION) & (position_data[1, :] > MIN_POSITION)
+        x_interp = np.interp(time_data, time_data[interp_mask], position_data[0, :][interp_mask])
+        y_interp = np.interp(time_data, time_data[interp_mask], position_data[1, :][interp_mask])
 
-    return np.stack((x_interp, y_interp))
+        return np.stack((x_interp, y_interp))
 
 
 def get_transformation_matrix(
@@ -228,8 +231,13 @@ if __name__ == "__main__":
 
     fpaths, files = get_files_containing("data/pipeline_data", "pipeline_data.pkl")
     for fpath, file in zip(fpaths, files):
-        # Load the session data
+        # Skip data that has already been transformed
         participant_id, session_id = fpath.split("/")[-2:]
+        fname = f"{participant_id}_{session_id}_transformed_hand_data.pkl"
+        if os.path.exists(os.path.join(fpath, fname)):
+            continue
+
+        # Load the session data
         session_data = load_session_data(participant_id, session_id)
 
         # Calculate the hand positions relative to the apparatus frame
@@ -247,6 +255,5 @@ if __name__ == "__main__":
         hand_data.calculate_hand_speeds()
 
         # Save the transformed hand data
-        fname = f"{participant_id}_{session_id}_transformed_hand_data.pkl"
         with open(os.path.join(fpath, fname), "wb") as f:
             pickle.dump(hand_data, f)
