@@ -1,5 +1,6 @@
 import os
 import cv2
+import sys
 import time
 import pickle
 from pathlib import Path
@@ -12,6 +13,7 @@ import matplotlib.pyplot as plt
 import mediapipe.python.solutions as mp
 from pupil_apriltags import Detector, Detection
 
+sys.path.insert(0, os.path.abspath(".."))
 from config.config_dataclasses import PipelineConfig, SessionConfig
 from utils.split_diode_blocks import get_block_data
 from utils.data_loading import load_diode_data, load_video_mp4, load_video_time

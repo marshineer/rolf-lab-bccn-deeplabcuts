@@ -2,10 +2,12 @@
 or (if proper arguments are given) it plots the full diode data for a single session, as well as
 the individual block data (including extracted event onset and block end times)."""
 
-import json
+import os
+import sys
 import argparse
 import matplotlib.pyplot as plt
-# from utils.split_diode_blocks import get_block_data
+sys.path.insert(0, os.path.abspath(".."))
+from utils.split_diode_blocks import get_block_data
 from utils.data_loading import get_files_containing, load_diode_data, load_session_config
 # from utils_pipeline import SessionConfig
 
@@ -33,19 +35,14 @@ def plot_diode_data(participant_id: str = None, session_id: str = None) -> None:
         plt.show()
         plt.close()
 
-        # config_path = f"../data/pipeline_data/{participant_id}/{session_id}/config.json"
-        # with open(config_path, "r") as fd:
-        #     session_settings = json.load(fd)
-        #     print(session_settings)
-        #     sesssion_config = SessionConfig(**session_settings)
-        sesssion_config = load_session_config(args.participant_id, args.session_id)
+        session_config = load_session_config(f"../data/pipeline_data/{participant_id}/{session_id}")
         get_block_data(
             diode_df,
-            sesssion_config.diode_threshold,
-            sesssion_config.separator_threshold,
-            sesssion_config.n_blocks,
-            sesssion_config.skip_valid_blocks,
-            sesssion_config.extra_apriltag_blocks,
+            session_config.diode_threshold,
+            session_config.separator_threshold,
+            session_config.n_blocks,
+            session_config.skip_valid_blocks,
+            session_config.extra_apriltag_blocks,
             True,
         )
         plt.close(fig1)

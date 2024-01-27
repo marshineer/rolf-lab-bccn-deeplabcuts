@@ -4,13 +4,13 @@ files, changing column names, interpolating missing rows, and zeroing the time."
 
 import os
 import cv2
-# import sys
+import sys
 import time
 import argparse
 import numpy as np
 import pandas as pd
 from pathlib import Path
-# sys.path.insert(0, f"../{os.path.dirname(os.path.abspath(__file__))}")
+sys.path.insert(0, os.path.abspath(".."))
 from utils.data_loading import get_files_containing
 
 
@@ -22,7 +22,7 @@ def concatenate_video_data(froot: str) -> None:
     """
 
     if froot is None:
-        froot = "data/original_data/"
+        froot = "../data/original_data/"
 
     # Get the video files and group by session
     video_paths, video_files = get_files_containing(froot, ".mp4", "block")
@@ -33,7 +33,7 @@ def concatenate_video_data(froot: str) -> None:
     # For each session, concatenate multi-part video files
     for dirpath, file_list in video_parts.items():
         participant_id, session_id = file_list[0].split(".")[0].split("_")[:2]
-        new_dirpath = f"data/pipeline_data/{participant_id}/{session_id}"
+        new_dirpath = f"../data/pipeline_data/{participant_id}/{session_id}"
         Path(new_dirpath).mkdir(parents=True, exist_ok=True)
         new_filename = os.path.join(new_dirpath, f"{participant_id}_{session_id}.mp4")
         if not os.path.exists(new_filename) and len(file_list) > 1:
@@ -79,7 +79,7 @@ def concatenate_gaze_data(froot: str) -> None:
     """
 
     if froot is None:
-        froot = "data/original_data/"
+        froot = "../data/original_data/"
 
     # Get the gaze files and group by session
     gaze_paths, gaze_files = get_files_containing(froot, "gaze_positions")
@@ -90,7 +90,7 @@ def concatenate_gaze_data(froot: str) -> None:
     # For each session, preprocess the gaze data and concatenate any multi-part files
     for dirpath, file_list in gaze_parts.items():
         participant_id, session_id = dirpath.split("/")[-2:]
-        new_dirpath = f"data/pipeline_data/{participant_id}/{session_id}"
+        new_dirpath = f"../data/pipeline_data/{participant_id}/{session_id}"
         Path(new_dirpath).mkdir(parents=True, exist_ok=True)
         new_filename = os.path.join(new_dirpath, f"{participant_id}_{session_id}_video_time.csv")
         if os.path.exists(new_filename):
@@ -118,7 +118,7 @@ def preprocess_diode_data(froot: str) -> None:
     """
 
     if froot is None:
-        froot = "data/original_data/"
+        froot = "../data/original_data/"
 
     # Get the light diode files and group by session
     diode_paths, diode_files = get_files_containing(froot, "light.csv")
@@ -129,7 +129,7 @@ def preprocess_diode_data(froot: str) -> None:
     # For each session, preprocess the light diode data and concatenate any multi-part files
     for dirpath, file_list in file_parts.items():
         participant_id, session_id = file_list[0].split("_")[:2]
-        new_dirpath = f"data/pipeline_data/P{participant_id}/{session_id}"
+        new_dirpath = f"../data/pipeline_data/P{participant_id}/{session_id}"
         Path(new_dirpath).mkdir(parents=True, exist_ok=True)
         new_filename = os.path.join(new_dirpath, f"P{participant_id}_{session_id}_diode_sensor.csv")
         if os.path.exists(new_filename):

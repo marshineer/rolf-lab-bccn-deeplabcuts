@@ -15,9 +15,11 @@ some other reason. This will be accounted for in the next step. For now, these m
 reference positions are simply interpolated using the frame before and after the missed detections."""
 
 import os
+import sys
 import pickle
 import numpy as np
 import matplotlib.pyplot as plt
+sys.path.insert(0, os.path.abspath(".."))
 from utils.calculations import MIN_POSITION, get_basis_vectors
 from utils.data_loading import get_files_containing
 from utils_pipeline import SessionData, load_session_data
@@ -213,16 +215,17 @@ def get_scaling_matrix(
 
 if __name__ == "__main__":
     # Initialize the variables used for all participants and sessions
-    with open("data/pipeline_data/P17/A1/P17_A1_pipeline_data.pkl", "rb") as f:
+    with open("../data/pipeline_data/P17/A1/P17_A1_pipeline_data.pkl", "rb") as f:
         reference_data: SessionData = pickle.load(f)
     scale_matrix = get_scaling_matrix(reference_data.reference_pos_abs[0], 0, reference_data.apparatus_tag_ids)
 
-    fpaths, files = get_files_containing("data/pipeline_data", "pipeline_data.pkl")
+    fpaths, files = get_files_containing("../data/pipeline_data", "pipeline_data.pkl")
     for fpath, file in zip(fpaths, files):
         # Skip data that has already been transformed
         participant_id, session_id = fpath.split("/")[-2:]
         fname = f"{participant_id}_{session_id}_transformed_hand_data.pkl"
         if os.path.exists(os.path.join(fpath, fname)):
+            print(f"{fname} already exists")
             continue
 
         # Load the session data
