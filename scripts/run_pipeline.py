@@ -4,7 +4,8 @@ to the block videos, so that a visual inspection of the event onset timing, Apri
 and hand tracking can be performed before further processing the data. The primary output of
 this step is the hand tracking data, which is further processed in the next step."""
 
-from scripts.utils_pipeline import VideoProcessingPipeline, load_session_data
+# import os
+from utils_pipeline import VideoProcessingPipeline, load_session_data
 from utils.data_loading import get_files_containing, load_pipeline_config, load_session_config
 
 
@@ -13,13 +14,14 @@ if __name__ == '__main__':
     pipeline_config = load_pipeline_config()
 
     # Get the config files and iterate through
-    config_paths, _ = get_files_containing("../data/pipeline_data", "config.json")
+    config_paths, _ = get_files_containing("data/pipeline_data", "config.json")
     for fpath in config_paths:
         # Load the session config file
         session_config = load_session_config(fpath)
 
         # Check if the data for this participant session is fully processed
         session_data = load_session_data(session_config.participant_id, session_config.session_id)
+        # _, block_files = get_files_containing(os.path.join(fpath, "block_videos"), ".mp4")
         if session_data is not None:
             if len(session_data.hand_landmark_pos_abs) == session_config.n_blocks:
                 continue

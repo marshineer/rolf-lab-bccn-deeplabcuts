@@ -5,9 +5,9 @@ the individual block data (including extracted event onset and block end times).
 import json
 import argparse
 import matplotlib.pyplot as plt
-from utils.split_diode_blocks import get_block_data
-from utils.data_loading import get_files_containing, load_diode_data
-from scripts.utils_pipeline import SessionConfig
+# from utils.split_diode_blocks import get_block_data
+from utils.data_loading import get_files_containing, load_diode_data, load_session_config
+# from utils_pipeline import SessionConfig
 
 
 def plot_diode_data(participant_id: str = None, session_id: str = None) -> None:
@@ -33,12 +33,13 @@ def plot_diode_data(participant_id: str = None, session_id: str = None) -> None:
         plt.show()
         plt.close()
 
-        config_path = f"./data/pipeline_data/{participant_id}/{session_id}/config.json"
-        with open(config_path, "r") as fd:
-            session_settings = json.load(fd)
-            print(session_settings)
-            sesssion_config = SessionConfig(**session_settings)
-        _ = get_block_data(
+        # config_path = f"../data/pipeline_data/{participant_id}/{session_id}/config.json"
+        # with open(config_path, "r") as fd:
+        #     session_settings = json.load(fd)
+        #     print(session_settings)
+        #     sesssion_config = SessionConfig(**session_settings)
+        sesssion_config = load_session_config(args.participant_id, args.session_id)
+        get_block_data(
             diode_df,
             sesssion_config.diode_threshold,
             sesssion_config.separator_threshold,

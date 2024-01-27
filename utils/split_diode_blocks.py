@@ -6,6 +6,7 @@ pd.options.mode.chained_assignment = None
 N_EDGES_APRILTAG_SET = 10
 N_APRILTAGS = 5
 MIN_TRIALS = 40
+MIN_TRIAL_SEPARATION = 1.5
 
 
 def get_block_data(
@@ -92,21 +93,18 @@ def get_block_data(
         event_onset_inds = block_crossings[N_EDGES_APRILTAG_SET:last_event_ind:2]
         if i in extra_apriltag_blocks:
             event_onset_inds = event_onset_inds[1:]
-        # # TODO: test whether this affects preprocessing of videos
-        # event_times_temp = block_time[event_onset_inds]
-        # event_diffs = np.diff(event_times_temp)
-        # too_close_onsets = np.argwhere(event_diffs < MIN_TRIAL_SEPARATION).squeeze()
-        # if too_close_onsets:
-        #     event_times_temp = np.delete(event_times_temp, too_close_onsets + 1)
-        # # If there are not enough trials in the block, it is invalid
-        # if len(event_times_temp) < MIN_TRIALS:
-        #     continue
-        # event_onset_times.append(event_times_temp)
+
+        # Remove extra event times
+        event_times_temp = block_time[event_onset_inds]
+        event_diffs = np.diff(event_times_temp)
+        too_close_onsets = np.argwhere(event_diffs < MIN_TRIAL_SEPARATION)
+        if too_close_onsets.size > 0:
+            event_times_temp = np.delete(event_times_temp, too_close_onsets + 1)
 
         # If there are not enough trials in the block, it is invalid
-        if len(event_onset_inds) < MIN_TRIALS:
+        if len(event_times_temp) < MIN_TRIALS:
             continue
-        event_onset_times.append(block_time[event_onset_inds])
+        event_onset_times.append(event_times_temp)
 
         # Trim the block to remove excess data, then store valid blocks
         if last_event_ind is not None:
