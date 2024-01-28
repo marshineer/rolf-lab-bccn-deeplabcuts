@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import pickle
 import numpy as np
@@ -6,6 +7,7 @@ import matplotlib.pyplot as plt
 from typing import Any
 from dataclasses import dataclass
 
+sys.path.insert(0, os.path.abspath(".."))
 from config.config_dataclasses import PostprocessingConfig
 from utils_pipeline import load_session_data
 from utils.split_diode_blocks import MIN_TRIAL_SEPARATION
