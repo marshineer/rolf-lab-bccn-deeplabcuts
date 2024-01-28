@@ -181,11 +181,11 @@ def extract_jatos_trial_data(
 ) -> list[TrialData]:
     trial_data_blocks = []
     for i, jatos_data in enumerate(jatos_blocks):
-        t0 = jatos_data[0]["startTime"] + jatos_data[0]["change_onset"] - MIN_TRIAL_SEPARATION * 1000
+        t0 = jatos_data[0]["startTime"] + jatos_data[0]["change_onset"] - diode_onsets[i][0] * 1000
         trial_data = TrialData(
             participant_id,
             session_id,
-            diode_onsets[i] - diode_onsets[i][0] + MIN_TRIAL_SEPARATION,
+            diode_onsets[i],
             np.array([(trial["startTime"] - t0) / 1000 for trial in jatos_data]),
             np.array([trial["change_onset"] / 1000 for trial in jatos_data]),
             [np.array([(t - t0) / 1000 for t in trial["touchOn"]]) for trial in jatos_data],
