@@ -3,8 +3,6 @@ import cv2
 import numpy as np
 
 MIN_POSITION = 0.1
-MAX_ZERO_RUN = 30
-MAX_ZERO_TOTAL = 500
 
 
 def get_fourcc(cap: cv2.VideoCapture) -> str:
@@ -115,55 +113,3 @@ def calculate_speed(time: np.ndarray, position: np.ndarray) -> np.ndarray:
     """
 
     return np.diff(position) / np.diff(time)
-
-
-def check_zero_runs(data: np.ndarray) -> bool:
-    """Determines whether there are consecutive zeros greater than a minimum length in a 1D array.
-
-    Adapted from:
-    https://stackoverflow.com/questions/24885092/finding-the-consecutive-zeros-in-a-numpy-array
-
-    Parameters
-        data (np.ndarray): data in which to find consecutive zeros
-
-    Returns
-        (bool): True if the array contains any runs of consecutive zeros greater than a min value
-    """
-
-    # Create an array that is 1 where the data is 0, and pad each end with an extra 0
-    iszero = np.concatenate(([0], np.equal(data, 0).view(np.int8), [0]))
-    absdiff = np.abs(np.diff(iszero))
-
-    # Runs start and end where absdiff is 1.
-    ranges = np.where(absdiff == 1)[0].reshape(-1, 2)
-
-    # Check whether any runs are greater than the minimum
-    for n_gap in range(ranges.shape[0]):
-        ind1, ind2 = ranges[n_gap, :]
-        if ind2 - ind1 > MAX_ZERO_RUN:
-            print(f"The biggest gap in this block is {np.max(np.diff(ranges, axis=-1))}")
-            return True
-
-    return False
-
-
-def checK_apriltag_gaps(apparatus_tag_pos: dict[int, np.ndarray]) -> bool:
-    """Determines whether there are too many missed detections of the apparatus AprilTags.
-
-    This may be due to AprilTag detection gaps greater than the allowable duration or if the
-    total number of missed detections is too large.
-
-    Parameters
-        apparatus_tag_pos (dict[int, np.ndarray]): positions of the apparatus AprilTags
-
-    Returns
-        (bool): True if there are an unacceptable number of missed AprilTag detections
-    """
-
-    for tag_id, tag_pos in apparatus_tag_pos.items():
-        missed_detections = sum(tag_pos[0, :] < MIN_POSITION)
-        if check_zero_runs(tag_pos[0, :]) or missed_detections > MAX_ZERO_TOTAL:
-            print(f"Tag ID: {tag_id} is missing in {missed_detections} frames")
-            return True
-
-    return False
