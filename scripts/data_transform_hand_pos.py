@@ -29,114 +29,114 @@ class TransformedHandData:
     """This class stores the transformed hand landmark data.
 
     The hand data is transformed from the video frame of reference to the frame of reference defined
-    by the AprilTags on the experimental apparatus, with IDs: 10 (y-dir basis), 20 or 30 (x-dir basis),
-    and 40 (origin). This transformation includes a scaling factor, such that data from all sessions,
-    blocks, and time points are comparable.
-
-    The hand landmark speeds are calculated in both the x- and y-directions, as well as the combined
-    magnitude. Reference position data is included for checking later.
+    by the top-left corner of the AprilTags on the experimental apparatus, with IDs: 10 (y-dir basis),
+    20 or 30 (x-dir basis), and 40 (origin). This transformation includes a scaling factor, such that
+    data from all sessions, blocks, and time points are comparable.
 
     Attributes
+        participant_id (str): unique participant identifier
+        session_id (str): session identifier
         hand_landmarks (dict[int, str]): names (values) of landmarks associated with each ID (keys)
         time (list[np.ndarray]): time data for each block
         hand_position (list[dict[str, np.ndarray]]): transformed hand landmark position data
-        hand_speed (list[dict[str, np.ndarray]]): hand landmark speed data for each block and landmark
+        ref_pos (list[dict[str, np.ndarray]]): transformed AprilTag reference position data
 
     """
 
-    def __init__(self, hand_landmarks):
+    def __init__(self, participant_id: str, session_id: str, hand_landmarks: dict[int, str]):
+        self.participant_id: str = participant_id
+        self.session_id: str = session_id
         self.hand_landmarks: dict[int, str] = hand_landmarks
         self.time: list[np.ndarray] = []
         self.hand_position: list[dict[str, np.ndarray]] = []
         self.ref_pos: list[dict[str, np.ndarray]] = []
 
+    def transform_hand_positions(
+            self,
+            session_data_class: SessionData,
+            reference_scale_matrix: np.ndarray,
+            plot_landmarks: dict[str, int] = None,
+    ) -> None:
+        """Calculates hand positions relative to a reference point.
 
-def transform_hand_positions(
-        output_data: TransformedHandData,
-        session_data_class: SessionData,
-        reference_scale_matrix: np.ndarray,
-        plot_landmarks: dict[str, int] = None,
-) -> None:
-    """Calculates hand positions relative to a reference point.
+        Since the head-mounted camera is constantly moving, the hand positions are calculated relative
+        to a reference point. In this case, the top-left corner of the top-left AprilTag that is
+        affixed to the apparatus frame is chosen. It was chosen because it is considered least likely
+        to be covered during the trials (assuming the two_part_videos use their right index finger).
 
-    Since the head-mounted camera is constantly moving, the hand positions are calculated relative
-    to a reference point. In this case, the top-left corner of the top-left AprilTag that is
-    affixed to the apparatus frame is chosen. It was chosen because it is considered least likely
-    to be covered during the trials (assuming the two_part_videos use their right index finger).
+        Since the participant's hands are often off camera while the AprilTags are shown on the phone,
+        this method trims the hand landmark and reference position data to begin when the last AprilTag
+        disappears. Furthermore, the data is checked for frame where the hands or reference position is
+        not tracked, and interpolates the positions for these frames. This assumption is reasonable when
+        only a few consecutive frames are lost, due to the smoothness/continuity of video position in
+        time. Trials with an unacceptable number of consecutive missed AprilTag detections will be
+        filtered at a later date.
 
-    Since the participant's hands are often off camera while the AprilTags are shown on the phone,
-    this method trims the hand landmark and reference position data to begin when the last AprilTag
-    disappears. Furthermore, the data is checked for frame where the hands or reference position is
-    not tracked, and interpolates the positions for these frames. This assumption is reasonable when
-    only a few consecutive frames are lost, due to the smoothness/continuity of video position in
-    time.
+        The same AprilTags cannot always be used as references. Therefore, the AprilTag IDs used to
+        define the coordinates of a reference frame are provided in the order [origin, v1, v2].
 
-    The same AprilTags cannot always be used as references. Therefore, the AprilTag IDs used to
-    define the coordinates of a reference frame are provided in the order [origin, v1, v2].
+        Parameters
+            session_data_class (SessionData): class containing the pipeline session data
+            reference_scale_matrix (np.ndarray): matrix used to scale the transformed positions
+            plot_landmarks (dict[str, int]): hand landmarks to plot
+        """
 
-    Parameters
-        output_data (PostProcessedData): dataclass in which post-processed data is stored
-        session_data_class (SessionData): class containing the pipeline session data
-        reference_scale_matrix (np.ndarray): matrix used to scale the transformed positions
-        plot_landmarks (dict[str, int]): hand landmarks to plot
-    """
+        itr_lists = zip(
+            session_data_class.hand_landmark_pos_abs,
+            session_data_class.reference_pos_abs,
+            session_data_class.block_times,
+            session_data_class.first_trial_frame.values(),
+        )
+        for block, (lm_pos, ref_pos, time_vec, ind0) in enumerate(itr_lists):
+            # Determine which AprilTag is the best reference
+            reference_tag_id = session_data_class.apparatus_tag_ids[0]
 
-    itr_lists = zip(
-        session_data_class.hand_landmark_pos_abs,
-        session_data_class.reference_pos_abs,
-        session_data_class.block_times,
-        session_data_class.first_trial_frame.values(),
-    )
-    for block, (lm_pos, ref_pos, time_vec, ind0) in enumerate(itr_lists):
-        # Determine which AprilTag is the best reference
-        reference_tag_id = session_data_class.apparatus_tag_ids[0]
-
-        # Interpolate the missing reference AprilTag positions
-        interp_ref_pos = {}
-        for tag_id in session_data_class.apparatus_tag_ids:
-            interp_ref_pos[tag_id] = interpolate_pos(time_vec, ref_pos[tag_id])[:, ind0:]
-
-        # Rotate the frame to be square to the apparatus' AprilTags
-        position_shape = interp_ref_pos[reference_tag_id].shape
-        tranformed_lm_pos = {lm: np.zeros(position_shape) for lm in session_data_class.tracked_landmark_ids}
-        rotated_ref_pos = {tag: np.zeros(position_shape) for tag in session_data_class.apparatus_tag_ids}
-        for i in range(position_shape[1]):
-            # Calculate the transformation matrix for each frame
-            transformation_matrix = get_transformation_matrix(
-                interp_ref_pos,
-                i,
-                session_data_class.apparatus_tag_ids,
-                reference_scale_matrix,
-            )
-
-            # Transform hand landmarks
-            for lm, lbl in zip(session_data_class.tracked_landmark_ids, session_data_class.tracked_landmark_names):
-                # Interpolate the hand landmark positions
-                lm_xy = interpolate_pos(time_vec, lm_pos[lm])[:, ind0:]
-                # Translate the coordinates to the origin of the reference frame
-                rel_xy = lm_xy - interp_ref_pos[reference_tag_id]
-                # Transform the coordinates into the reference frame
-                tranformed_lm_pos[lm][:, i] = transformation_matrix @ rel_xy[:, i]
-
-            # Transform reference AprilTags
+            # Interpolate the missing reference AprilTag positions
+            interp_ref_pos = {}
             for tag_id in session_data_class.apparatus_tag_ids:
-                rotated_ref_pos[tag_id][:, i] = transformation_matrix @ interp_ref_pos[tag_id][:, i]
+                interp_ref_pos[tag_id] = interpolate_pos(time_vec, ref_pos[tag_id])[:, ind0:]
 
-        if plot_landmarks is not None:
-            fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-            for landmark_name, landmark_id in plot_landmarks.items():
-                ax.plot(time_vec[ind0:], tranformed_lm_pos[landmark_id][0, :], label=f"X: {landmark_name}")
-                ax.plot(time_vec[ind0:], tranformed_lm_pos[landmark_id][1, :], label=f"Y: {landmark_name}")
-            ax.set_title(f"{participant_id}-{session_id}-Block: {block} (Ref Tag: #{reference_tag_id})")
-            ax.legend()
-            plt.show()
-            plt.close()
-        else:
-            print(f"{participant_id}-{session_id}-Block: {block} (Ref Tag: #{reference_tag_id})")
+            # Rotate the frame to be square to the apparatus' AprilTags
+            position_shape = interp_ref_pos[reference_tag_id].shape
+            tranformed_lm_pos = {lm: np.zeros(position_shape) for lm in session_data_class.tracked_landmark_ids}
+            rotated_ref_pos = {tag: np.zeros(position_shape) for tag in session_data_class.apparatus_tag_ids}
+            for i in range(position_shape[1]):
+                # Calculate the transformation matrix for each frame
+                transformation_matrix = get_transformation_matrix(
+                    interp_ref_pos,
+                    i,
+                    session_data_class.apparatus_tag_ids,
+                    reference_scale_matrix,
+                )
 
-        output_data.time.append(time_vec[ind0:])
-        output_data.hand_position.append(tranformed_lm_pos)
-        output_data.ref_pos.append(rotated_ref_pos)
+                # Transform hand landmarks
+                for lm, lbl in zip(session_data_class.tracked_landmark_ids, session_data_class.tracked_landmark_names):
+                    # Interpolate the hand landmark positions
+                    lm_xy = interpolate_pos(time_vec, lm_pos[lm])[:, ind0:]
+                    # Translate the coordinates to the origin of the reference frame
+                    rel_xy = lm_xy - interp_ref_pos[reference_tag_id]
+                    # Transform the coordinates into the reference frame
+                    tranformed_lm_pos[lm][:, i] = transformation_matrix @ rel_xy[:, i]
+
+                # Transform reference AprilTags
+                for tag_id in session_data_class.apparatus_tag_ids:
+                    rotated_ref_pos[tag_id][:, i] = transformation_matrix @ interp_ref_pos[tag_id][:, i]
+
+            if plot_landmarks is not None:
+                fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+                for landmark_name, landmark_id in plot_landmarks.items():
+                    ax.plot(time_vec[ind0:], tranformed_lm_pos[landmark_id][0, :], label=f"X: {landmark_name}")
+                    ax.plot(time_vec[ind0:], tranformed_lm_pos[landmark_id][1, :], label=f"Y: {landmark_name}")
+                ax.set_title(f"{self.participant_id}-{self.session_id}-Block: {block} (Ref Tag: #{reference_tag_id})")
+                ax.legend()
+                plt.show()
+                plt.close()
+            else:
+                print(f"{self.participant_id}-{self.session_id}-Block: {block} (Ref Tag: #{reference_tag_id})")
+
+            self.time.append(time_vec[ind0:])
+            self.hand_position.append(tranformed_lm_pos)
+            self.ref_pos.append(rotated_ref_pos)
 
 
 def interpolate_pos(time_data: np.ndarray, position_data: np.ndarray) -> np.ndarray:
@@ -213,7 +213,35 @@ def get_scaling_matrix(
     return np.diag([1 / np.linalg.norm(basis_v1), 1 / np.linalg.norm(basis_v2)])
 
 
-if __name__ == "__main__":
+def load_transformed_hand(participant_id: str, session_id: str) -> TransformedHandData | None:
+    """Loads the transformed hand data for a particular session.
+
+    Parameters
+        participant_id (str): unique participant identifier "PXX"
+        session_id (str): session identifier ["A1", "A2", "B1", "B2"]
+
+    Returns
+        (TransformedHandData): class containing the transformed hand data
+    """
+
+    hand_pos_path = f"../data/pipeline_data/{participant_id}/{session_id}/"\
+                    f"{participant_id}_{session_id}_transformed_hand_data.pkl"
+    if os.path.exists(hand_pos_path):
+        with open(hand_pos_path, "rb") as f:
+            return pickle.load(f)
+    else:
+        return None
+
+
+def main(plot_landmarks: dict[str, int] = None):
+    """Script that transforms the hand postions to a consistent frame of reference.
+
+    The frame of reference used is the AprilTags set on the corners of the experimental apparatus.
+
+    Parameters
+        plot_landmarks (dict[str, int]): names (keys) and IDs (values) of the hand landmarks to plot, if any
+    """
+
     # Initialize the variables used for all participants and sessions
     with open("../data/pipeline_data/P17/A1/P17_A1_pipeline_data.pkl", "rb") as f:
         reference_data: SessionData = pickle.load(f)
@@ -234,14 +262,14 @@ if __name__ == "__main__":
         # Calculate the hand positions relative to the apparatus frame
         tracked_landmarks = {lm_id: lm for lm_id, lm in zip(session_data.tracked_landmark_ids,
                                                             session_data.tracked_landmark_names)}
-        hand_data = TransformedHandData(tracked_landmarks)
-        transform_hand_positions(
-            hand_data,
-            session_data,
-            scale_matrix,
-            # {"Index Tip": 8},
-        )
+        hand_data = TransformedHandData(participant_id, session_id, tracked_landmarks)
+        hand_data.transform_hand_positions(session_data, scale_matrix, plot_landmarks)
 
         # Save the transformed hand data
         with open(os.path.join(fpath, fname), "wb") as f:
             pickle.dump(hand_data, f)
+
+
+if __name__ == "__main__":
+    # main({"Index Tip": 8})
+    main()
