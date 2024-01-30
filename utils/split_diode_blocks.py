@@ -125,10 +125,14 @@ def get_block_data(
         # As a visual check
         if show_plots:
             fig, ax = plt.subplots(1, 1, figsize=(16, 5))
-            ax.plot(block_time, block_light_values)
+            ax.plot(block_time, block_light_values, label="Diode Data")
             ax.vlines(block_time[block_crossings], 0, diode_threshold, colors='r', linewidths=3)
-            ax.vlines(event_onset_times[-1], 0, diode_threshold // 2, colors='g', linewidths=3)
-            ax.plot(valid_blocks[-1].time, valid_blocks[-1].light_value)
+            ax.vlines(event_onset_times[-1], 0, diode_threshold // 2, colors='g', linewidths=3, label="Event Onsets")
+            ax.plot(valid_blocks[-1].time, valid_blocks[-1].light_value, label="Diode Data Block")
+            ax.set_xlabel("Block Time", fontsize=16)
+            ax.set_ylabel("Diode Brightness", fontsize=16)
+            ax.set_title(f"Block {i}", fontsize=24)
+            ax.legend(loc=2)
             plt.show()
             plt.close()
 
