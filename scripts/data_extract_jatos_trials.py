@@ -29,7 +29,7 @@ class TrialData:
     trial_dot_pos1: np.ndarray
     trial_dot_pos2: np.ndarray
     trial_flash: bool
-    trial_jump: bool
+    trial_shift: bool
     trial_usable: bool = True
 
 
@@ -64,16 +64,16 @@ def get_trial_data(plot_onsets: bool = True) -> None:
         # Remove invalid trials
         jatos_blocks = filter_unsuccessful_trials(jatos_blocks)
 
-        # Visually compare jatos and diode event onsets to ensure the first diode onset is correct
         if plot_onsets:
+            # Visually compare jatos and diode event onsets to ensure the first diode onset is correct
             plot_event_onset_comparison(jatos_blocks, jatos_block_dts, session_data)
+        else:
+            # Extract the jatos data for each trial
+            jatos_session = extract_jatos_trial_data(jatos_blocks, jatos_block_dts, session_data)
 
-        # Extract the jatos data for each trial
-        jatos_session = extract_jatos_trial_data(jatos_blocks, jatos_block_dts, session_data)
-
-        # Save the transformed hand data
-        with open(filename, "wb") as f:
-            pickle.dump(jatos_session, f)
+            # Save the transformed hand data
+            with open(filename, "wb") as f:
+                pickle.dump(jatos_session, f)
 
 
 def parse_jatos_json(jatos_path: str):
@@ -219,7 +219,7 @@ def populate_trial_dataclass(
         trial_dot_pos1=np.stack((trial_dict["position_x"], trial_dict["position_y"])),
         trial_dot_pos2=np.stack((trial_dict["shifted_position_x"], trial_dict["shifted_position_y"])),
         trial_flash=trial_dict["flashShown"],
-        trial_jump=trial_dict["stimJumped"],
+        trial_shift=trial_dict["stimJumped"],
     )
 
     return trial_data
@@ -277,6 +277,29 @@ def find_zero_runs(data: np.ndarray) -> np.ndarray:
         ranges = ranges[np.diff(ranges, axis=-1).squeeze() > MAX_ZERO_DT]
 
     return ranges
+
+
+def load_session_trials(participant_id: str, session_id: str) -> list[list[TrialData]] | None:
+    """Loads the jatos trial dataclasses for a particular session.
+
+    Parameters
+        participant_id (str): unique participant identifier "PXX"
+        session_id (str): session identifier ["A1", "A2", "B1", "B2"]
+
+    Returns
+        (TransformedHandData): class containing the transformed hand data
+    """
+
+    session_path = f"../data/pipeline_data/{participant_id}/{session_id}/{participant_id}_{session_id}_trial_data.pkl"
+    if os.path.exists(session_path):
+        with open(session_path, "rb") as f:
+            return pickle.load(f)
+    else:
+        return None
+
+
+def main():
+    pass
 
 
 if __name__ == "__main__":
