@@ -24,13 +24,14 @@ import matplotlib.pyplot as plt
 from scipy.interpolate import splrep, BSpline
 
 sys.path.insert(0, os.path.abspath(".."))
-# sys.path.insert(0, str(Path(os.path.dirname(__file__)).parent.absolute()))
 from utils.calculations import MIN_POSITION, get_basis_vectors
 from utils.data_loading import load_pipeline_config, get_files_containing
 from utils.pipeline import INDEX_FINGER_TIP_IDX, SessionData, load_session_data
 
 
 DT_SPEED = 0.001
+# DT_SPEED = 0.004
+SMOOTHING = 4500
 
 
 # TODO: change this to calculate_hand_speeds.py, and add hand speed calculations
@@ -57,11 +58,11 @@ class TransformedHandData:
         self.session_id: str = session_data.session_id
         self.hand_landmarks: dict[str, int] = session_data.tracked_landmarks
         self.time_video: list[np.ndarray] = []
-        self.time_interpolated: list[np.ndarray] = []
         self.hand_pos: list[dict[int, np.ndarray]] = []
+        self.ref_pos: list[dict[int, np.ndarray]] = []
+        self.time_interpolated: list[np.ndarray] = []
         self.hand_pos_interpolated: list[dict[int, np.ndarray]] = []
         self.hand_speed: list[dict[int, np.ndarray]] = []
-        self.ref_pos: list[dict[int, np.ndarray]] = []
 
     def transform_hand_positions(
             self,
@@ -135,75 +136,58 @@ class TransformedHandData:
                     rotated_ref_pos[tag_id][:, i] = transformation_matrix @ interp_ref_pos[tag_id][:, i]
 
             if plot_landmarks is not None:
-                # TODO: update plot_landmarks such that it pulls the landmark names from session_data_class
                 landmark_names_ids = {name: lm for name, lm in self.hand_landmarks.items() if lm in plot_landmarks}
                 fig, ax = plt.subplots(1, 1, figsize=(10, 6))
                 for landmark_name, landmark_id in landmark_names_ids.items():
                     ax.plot(time_vec[ind0:], transformed_lm_pos[landmark_id][0, :], label=f"X: {landmark_name}")
                     ax.plot(time_vec[ind0:], transformed_lm_pos[landmark_id][1, :], label=f"Y: {landmark_name}")
-                ax.set_title(f"{self.participant_id}-{self.session_id}-Block: {block} (Ref Tag: #{reference_tag_id})")
+                ax.set_title(f"{self.participant_id}-{self.session_id}, Block {block}")
                 ax.legend()
                 plt.show()
                 plt.close()
             else:
-                print(f"{self.participant_id}-{self.session_id}-Block: {block} (Ref Tag: #{reference_tag_id})")
+                print(f"{self.participant_id}-{self.session_id}, Block {block}")
 
             self.time_video.append(time_vec[ind0:])
             self.hand_pos.append(transformed_lm_pos)
             self.ref_pos.append(rotated_ref_pos)
 
     def calculate_hand_speeds(self, session_data: SessionData) -> None:
+        """Calculates the speed of each hand landmark.
+
+        Parameters
+            session_data (SessionData): class containing the pipeline session data
+        """
+
         # Calculate the index fingertip speed
         for block_time, hand_pos, onset_times in zip(self.time_video, self.hand_pos, session_data.event_onsets_blocks):
             # Interpolate the time to be used in the spline (video resolution is too low for differentiation)
             time_interpolated = np.arange(block_time[0], block_time[-1], DT_SPEED)
 
-            # Determine the smoothing factor
-            x_tip, y_tip = hand_pos[INDEX_FINGER_TIP_IDX][0, :], hand_pos[INDEX_FINGER_TIP_IDX][1, :]
-            for s in np.arange(3000, 6001, 300):
-                x_tip_spline = cubic_spline_filter(block_time, x_tip, time_interpolated, s)
-                y_tip_spline = cubic_spline_filter(block_time, y_tip, time_interpolated, s)
+            lm_pos_interpolated = {}
+            lm_hand_speed = {}
+            for landmark_name, landmark_id in self.hand_landmarks.items():
+                # Separate the x and y position data into 1D vectors
+                x_tip, y_tip = hand_pos[landmark_id][0, :], hand_pos[landmark_id][1, :]
 
-            for landmark_names, landmark_ids in self.hand_landmarks.items():
-                # x_pos = hand_pos[lm_ind][0, :]
-                # filtered_spline = cubic_spline_filter(block_time, x_pos, filtered_time, postprocess_config.smoothing_factor)
-                # nan_mask = np.isnan(filtered_spline)
-                # filtered_time = filtered_time[~nan_mask]
-                # filtered_spline = filtered_spline[~nan_mask]
-                # filtered_vel = np.diff(filtered_spline) / np.diff(filtered_time)
-                fig, ax = plt.subplots(2, 1, figsize=(10, 10))
-                ax[0].scatter(block_time, x_pos, label="X")
-                # ax[0].plot(filtered_time, filtered_spline, label=f"Cubic Spline")
-                # ax[0].vlines(onset_times, min(x_pos), max(x_pos), 'r')
-                # # ax[0].set_ylim([min(x_pos), max(x_pos)])
-                # ax[0].set_xlabel("Time")
-                # ax[0].set_ylabel("Transformed Index Finger Tip Position")
-                # ax[1].plot(filtered_time[:-1], filtered_vel, label=f"dx/dt")
-                # ax[1].vlines(onset_times, min(filtered_vel), max(filtered_vel), 'r')
-                # print(f"Min and max speed {min(filtered_vel)} and {max(filtered_vel)}")
-                # ax[0].legend()
-                # plt.show()
-                for s in [1000, 3000, 5000, 7000]:
-                    filtered_spline = cubic_spline_filter(block_time, x_pos, filtered_time, s)
-                    nan_mask = np.isnan(filtered_spline)
-                    filtered_time = filtered_time[~nan_mask]
-                    filtered_spline = filtered_spline[~nan_mask]
-                    filtered_vel = np.diff(filtered_spline) / np.diff(filtered_time)
-                    ax[0].plot(filtered_time, filtered_spline, label=f"Smoothing: {s}")
-                    ax[0].vlines(onset_times, min(x_pos), max(x_pos), 'r')
-                    ax[1].plot(filtered_time[:-1], filtered_vel, label=f"Smoothing: {s}")
-                    ax[1].vlines(onset_times, min(filtered_vel), max(filtered_vel), 'r')
-                ax[0].set_ylabel("Index Fingertip Position", fontsize=16)
-                ax[0].set_title("Cubic Spline Fitting of Hand Positions", fontsize=20)
-                ax[0].set_xlim([65.8, 67.9])
-                ax[0].set_ylim([min(x_pos), max(x_pos)])
-                ax[0].legend(loc=1)
-                ax[1].set_xlabel("Time")
-                ax[1].set_ylabel("Index Fingertip Speed", fontsize=16)
-                ax[1].set_xlim([65.8, 67.9])
-                ax[1].set_ylim([min(filtered_vel), max(filtered_vel)])
-                ax[1].legend(loc=1)
-                plt.show()
+                # Fit a cubic spline to the position data
+                x_spline = cubic_spline_filter(block_time, x_tip, time_interpolated, SMOOTHING)
+                y_spline = cubic_spline_filter(block_time, y_tip, time_interpolated, SMOOTHING)
+                nan_mask = np.isnan(x_spline)
+                time_interpolated = time_interpolated[~nan_mask]
+                x_spline = x_spline[~nan_mask]
+                y_spline = y_spline[~nan_mask]
+                lm_pos_interpolated[landmark_id] = np.stack((x_spline, y_spline), axis=0)
+
+                # Calculate the x, y and combined speeds
+                x_speed = calculate_speed(time_interpolated, x_spline)
+                y_speed = calculate_speed(time_interpolated, y_spline)
+                total_speed = np.sqrt(x_speed ** 2 + y_speed ** 2)
+                lm_hand_speed[landmark_id] = np.stack((x_speed, y_speed, total_speed), axis=0)
+
+            self.time_interpolated.append(time_interpolated)
+            self.hand_pos_interpolated.append(lm_pos_interpolated)
+            self.hand_speed.append(lm_hand_speed)
 
 
 def interpolate_pos(time_data: np.ndarray, position_data: np.ndarray) -> np.ndarray:
@@ -346,15 +330,18 @@ def main(plot_landmarks: list[int], overwrite_data: bool):
     fpaths, files = get_files_containing("../data/pipeline_data", "pipeline_data.pkl")
 
     # Load the scaling matrix, or create it, if one does not already exist
-    scaling_matrix_fpath = "../data/combined_sessions/scaling_matrix.pkl"
+    scaling_matrix_fpath = "../data/combined_sessions"
+    scaling_matrix_fname = "scaling_matrix.pkl"
     if os.path.exists(scaling_matrix_fpath):
-        with open(scaling_matrix_fpath, "rb") as f:
+        with open(os.path.join(scaling_matrix_fpath, scaling_matrix_fname), "rb") as f:
             scale_matrix = pickle.load(f)
     else:
         with open(os.path.join(fpaths[0], files[0]), "rb") as f:
             reference_data: SessionData = pickle.load(f)
         scale_matrix = get_scaling_matrix(reference_data.reference_pos_abs[0], 0, reference_data.apparatus_tag_ids)
         pathlib.Path(scaling_matrix_fpath).mkdir(parents=True)
+        with open(os.path.join(scaling_matrix_fpath, scaling_matrix_fname), "wb") as f_scaling:
+            pickle.dump(scale_matrix, f_scaling)
 
     for fpath, file in zip(fpaths, files):
         # Skip data that has already been transformed
@@ -372,10 +359,11 @@ def main(plot_landmarks: list[int], overwrite_data: bool):
         hand_data.transform_hand_positions(session_data, scale_matrix, plot_landmarks)
 
         # Calculate the speed of each landmark from the position data
+        hand_data.calculate_hand_speeds(session_data)
 
-        # # Save the transformed hand data
-        # with open(os.path.join(fpath, fname), "wb") as f:
-        #     pickle.dump(hand_data, f)
+        # Save the transformed hand data
+        with open(os.path.join(fpath, fname), "wb") as f:
+            pickle.dump(hand_data, f)
 
 
 if __name__ == "__main__":
@@ -389,17 +377,13 @@ if __name__ == "__main__":
         action="store_true",
         help="If True, overwrite the existing data"
     )
-    # TODO: add arg for landmarks to plot (must be int)
-    #  - use the hand_landmarks_tracked variable in session_data to get the name of the landmark
     parser.add_argument(
         "-lm", "--landmark_ids",
         type=int,
         nargs="*",
         choices=list(pipeline_config.tracked_hand_landmarks.values()),
-        default=[],
         help="IDs of hand landmark positions to plot after transformation"
     )
     args = parser.parse_args()
 
-    # main({"Index Tip": 8})
     main(args.landmark_ids, args.overwrite)
