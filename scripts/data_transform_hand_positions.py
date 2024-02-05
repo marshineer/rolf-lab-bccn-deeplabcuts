@@ -17,14 +17,23 @@ reference positions are simply interpolated using the frame before and after the
 import os
 import sys
 import pickle
+import pathlib
+import argparse
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.interpolate import splrep, BSpline
+
 sys.path.insert(0, os.path.abspath(".."))
+# sys.path.insert(0, str(Path(os.path.dirname(__file__)).parent.absolute()))
 from utils.calculations import MIN_POSITION, get_basis_vectors
-from utils.data_loading import get_files_containing
-from utils_pipeline import SessionData, load_session_data
+from utils.data_loading import load_pipeline_config, get_files_containing
+from utils.pipeline import INDEX_FINGER_TIP_IDX, SessionData, load_session_data
 
 
+DT_SPEED = 0.001
+
+
+# TODO: change this to calculate_hand_speeds.py, and add hand speed calculations
 class TransformedHandData:
     """This class stores the transformed hand landmark data.
 
@@ -43,19 +52,22 @@ class TransformedHandData:
 
     """
 
-    def __init__(self, participant_id: str, session_id: str, hand_landmarks: dict[int, str]):
-        self.participant_id: str = participant_id
-        self.session_id: str = session_id
-        self.hand_landmarks: dict[int, str] = hand_landmarks
-        self.time: list[np.ndarray] = []
-        self.hand_position: list[dict[str, np.ndarray]] = []
-        self.ref_pos: list[dict[str, np.ndarray]] = []
+    def __init__(self, session_data: SessionData):
+        self.participant_id: str = session_data.participant_id
+        self.session_id: str = session_data.session_id
+        self.hand_landmarks: dict[str, int] = session_data.tracked_landmarks
+        self.time_video: list[np.ndarray] = []
+        self.time_interpolated: list[np.ndarray] = []
+        self.hand_pos: list[dict[int, np.ndarray]] = []
+        self.hand_pos_interpolated: list[dict[int, np.ndarray]] = []
+        self.hand_speed: list[dict[int, np.ndarray]] = []
+        self.ref_pos: list[dict[int, np.ndarray]] = []
 
     def transform_hand_positions(
             self,
             session_data_class: SessionData,
             reference_scale_matrix: np.ndarray,
-            plot_landmarks: dict[str, int] = None,
+            plot_landmarks: list[int] = None,
     ) -> None:
         """Calculates hand positions relative to a reference point.
 
@@ -98,7 +110,7 @@ class TransformedHandData:
 
             # Rotate the frame to be square to the apparatus' AprilTags
             position_shape = interp_ref_pos[reference_tag_id].shape
-            tranformed_lm_pos = {lm: np.zeros(position_shape) for lm in session_data_class.tracked_landmark_ids}
+            transformed_lm_pos = {lm: np.zeros(position_shape) for lm in session_data_class.tracked_landmarks.values()}
             rotated_ref_pos = {tag: np.zeros(position_shape) for tag in session_data_class.apparatus_tag_ids}
             for i in range(position_shape[1]):
                 # Calculate the transformation matrix for each frame
@@ -110,23 +122,25 @@ class TransformedHandData:
                 )
 
                 # Transform hand landmarks
-                for lm, lbl in zip(session_data_class.tracked_landmark_ids, session_data_class.tracked_landmark_names):
+                for lbl, lm in session_data_class.tracked_landmarks.items():
                     # Interpolate the hand landmark positions
                     lm_xy = interpolate_pos(time_vec, lm_pos[lm])[:, ind0:]
                     # Translate the coordinates to the origin of the reference frame
                     rel_xy = lm_xy - interp_ref_pos[reference_tag_id]
                     # Transform the coordinates into the reference frame
-                    tranformed_lm_pos[lm][:, i] = transformation_matrix @ rel_xy[:, i]
+                    transformed_lm_pos[lm][:, i] = transformation_matrix @ rel_xy[:, i]
 
                 # Transform reference AprilTags
                 for tag_id in session_data_class.apparatus_tag_ids:
                     rotated_ref_pos[tag_id][:, i] = transformation_matrix @ interp_ref_pos[tag_id][:, i]
 
             if plot_landmarks is not None:
+                # TODO: update plot_landmarks such that it pulls the landmark names from session_data_class
+                landmark_names_ids = {name: lm for name, lm in self.hand_landmarks.items() if lm in plot_landmarks}
                 fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-                for landmark_name, landmark_id in plot_landmarks.items():
-                    ax.plot(time_vec[ind0:], tranformed_lm_pos[landmark_id][0, :], label=f"X: {landmark_name}")
-                    ax.plot(time_vec[ind0:], tranformed_lm_pos[landmark_id][1, :], label=f"Y: {landmark_name}")
+                for landmark_name, landmark_id in landmark_names_ids.items():
+                    ax.plot(time_vec[ind0:], transformed_lm_pos[landmark_id][0, :], label=f"X: {landmark_name}")
+                    ax.plot(time_vec[ind0:], transformed_lm_pos[landmark_id][1, :], label=f"Y: {landmark_name}")
                 ax.set_title(f"{self.participant_id}-{self.session_id}-Block: {block} (Ref Tag: #{reference_tag_id})")
                 ax.legend()
                 plt.show()
@@ -134,9 +148,62 @@ class TransformedHandData:
             else:
                 print(f"{self.participant_id}-{self.session_id}-Block: {block} (Ref Tag: #{reference_tag_id})")
 
-            self.time.append(time_vec[ind0:])
-            self.hand_position.append(tranformed_lm_pos)
+            self.time_video.append(time_vec[ind0:])
+            self.hand_pos.append(transformed_lm_pos)
             self.ref_pos.append(rotated_ref_pos)
+
+    def calculate_hand_speeds(self, session_data: SessionData) -> None:
+        # Calculate the index fingertip speed
+        for block_time, hand_pos, onset_times in zip(self.time_video, self.hand_pos, session_data.event_onsets_blocks):
+            # Interpolate the time to be used in the spline (video resolution is too low for differentiation)
+            time_interpolated = np.arange(block_time[0], block_time[-1], DT_SPEED)
+
+            # Determine the smoothing factor
+            x_tip, y_tip = hand_pos[INDEX_FINGER_TIP_IDX][0, :], hand_pos[INDEX_FINGER_TIP_IDX][1, :]
+            for s in np.arange(3000, 6001, 300):
+                x_tip_spline = cubic_spline_filter(block_time, x_tip, time_interpolated, s)
+                y_tip_spline = cubic_spline_filter(block_time, y_tip, time_interpolated, s)
+
+            for landmark_names, landmark_ids in self.hand_landmarks.items():
+                # x_pos = hand_pos[lm_ind][0, :]
+                # filtered_spline = cubic_spline_filter(block_time, x_pos, filtered_time, postprocess_config.smoothing_factor)
+                # nan_mask = np.isnan(filtered_spline)
+                # filtered_time = filtered_time[~nan_mask]
+                # filtered_spline = filtered_spline[~nan_mask]
+                # filtered_vel = np.diff(filtered_spline) / np.diff(filtered_time)
+                fig, ax = plt.subplots(2, 1, figsize=(10, 10))
+                ax[0].scatter(block_time, x_pos, label="X")
+                # ax[0].plot(filtered_time, filtered_spline, label=f"Cubic Spline")
+                # ax[0].vlines(onset_times, min(x_pos), max(x_pos), 'r')
+                # # ax[0].set_ylim([min(x_pos), max(x_pos)])
+                # ax[0].set_xlabel("Time")
+                # ax[0].set_ylabel("Transformed Index Finger Tip Position")
+                # ax[1].plot(filtered_time[:-1], filtered_vel, label=f"dx/dt")
+                # ax[1].vlines(onset_times, min(filtered_vel), max(filtered_vel), 'r')
+                # print(f"Min and max speed {min(filtered_vel)} and {max(filtered_vel)}")
+                # ax[0].legend()
+                # plt.show()
+                for s in [1000, 3000, 5000, 7000]:
+                    filtered_spline = cubic_spline_filter(block_time, x_pos, filtered_time, s)
+                    nan_mask = np.isnan(filtered_spline)
+                    filtered_time = filtered_time[~nan_mask]
+                    filtered_spline = filtered_spline[~nan_mask]
+                    filtered_vel = np.diff(filtered_spline) / np.diff(filtered_time)
+                    ax[0].plot(filtered_time, filtered_spline, label=f"Smoothing: {s}")
+                    ax[0].vlines(onset_times, min(x_pos), max(x_pos), 'r')
+                    ax[1].plot(filtered_time[:-1], filtered_vel, label=f"Smoothing: {s}")
+                    ax[1].vlines(onset_times, min(filtered_vel), max(filtered_vel), 'r')
+                ax[0].set_ylabel("Index Fingertip Position", fontsize=16)
+                ax[0].set_title("Cubic Spline Fitting of Hand Positions", fontsize=20)
+                ax[0].set_xlim([65.8, 67.9])
+                ax[0].set_ylim([min(x_pos), max(x_pos)])
+                ax[0].legend(loc=1)
+                ax[1].set_xlabel("Time")
+                ax[1].set_ylabel("Index Fingertip Speed", fontsize=16)
+                ax[1].set_xlim([65.8, 67.9])
+                ax[1].set_ylim([min(filtered_vel), max(filtered_vel)])
+                ax[1].legend(loc=1)
+                plt.show()
 
 
 def interpolate_pos(time_data: np.ndarray, position_data: np.ndarray) -> np.ndarray:
@@ -233,7 +300,40 @@ def load_transformed_hand(participant_id: str, session_id: str) -> TransformedHa
         return None
 
 
-def main(plot_landmarks: dict[str, int] = None):
+def cubic_spline_filter(
+        time_existing: np.ndarray,
+        position_existing: np.ndarray,
+        time_interpolated: np.ndarray,
+        smoothing: int,
+) -> np.ndarray:
+    """Interpolates and fits a cubic spline to the hand landmark position data.
+
+    Reference: https://docs.scipy.org/doc/scipy/tutorial/interpolate/smoothing_splines.html
+
+    Parameters
+        time_existing (np.ndarray): time vector for the existing position data
+        position_existing (np.ndarray): position data for the hand landmarks
+        time_interpolated (np.ndarray): interpolated time vector over which to fit the spline
+        smoothing (int): spline smoothing factor
+    """
+    tck = splrep(time_existing, position_existing, s=smoothing)
+    return BSpline(*tck, extrapolate=False)(time_interpolated)
+
+
+def calculate_speed(time_data: np.ndarray, position_data: np.ndarray) -> np.ndarray:
+    """Calculates speed from position data.
+
+    Parameters
+        time_data (np.ndarray): time vector associated with the postion data
+        position_data (np.ndarray): single dimension positon data
+
+    Returns
+        (np.ndarray): vector of speed at each time point
+    """
+    return np.diff(position_data) / np.diff(time_data)
+
+
+def main(plot_landmarks: list[int], overwrite_data: bool):
     """Script that transforms the hand postions to a consistent frame of reference.
 
     The frame of reference used is the AprilTags set on the corners of the experimental apparatus.
@@ -242,17 +342,25 @@ def main(plot_landmarks: dict[str, int] = None):
         plot_landmarks (dict[str, int]): names (keys) and IDs (values) of the hand landmarks to plot, if any
     """
 
-    # Initialize the variables used for all participants and sessions
-    with open("../data/pipeline_data/P17/A1/P17_A1_pipeline_data.pkl", "rb") as f:
-        reference_data: SessionData = pickle.load(f)
-    scale_matrix = get_scaling_matrix(reference_data.reference_pos_abs[0], 0, reference_data.apparatus_tag_ids)
-
+    # Load a list of all the pipeline data files
     fpaths, files = get_files_containing("../data/pipeline_data", "pipeline_data.pkl")
+
+    # Load the scaling matrix, or create it, if one does not already exist
+    scaling_matrix_fpath = "../data/combined_sessions/scaling_matrix.pkl"
+    if os.path.exists(scaling_matrix_fpath):
+        with open(scaling_matrix_fpath, "rb") as f:
+            scale_matrix = pickle.load(f)
+    else:
+        with open(os.path.join(fpaths[0], files[0]), "rb") as f:
+            reference_data: SessionData = pickle.load(f)
+        scale_matrix = get_scaling_matrix(reference_data.reference_pos_abs[0], 0, reference_data.apparatus_tag_ids)
+        pathlib.Path(scaling_matrix_fpath).mkdir(parents=True)
+
     for fpath, file in zip(fpaths, files):
         # Skip data that has already been transformed
         participant_id, session_id = fpath.split("/")[-2:]
         fname = f"{participant_id}_{session_id}_transformed_hand_data.pkl"
-        if os.path.exists(os.path.join(fpath, fname)):
+        if not overwrite_data and os.path.exists(os.path.join(fpath, fname)):
             print(f"{fname} already exists")
             continue
 
@@ -260,16 +368,38 @@ def main(plot_landmarks: dict[str, int] = None):
         session_data = load_session_data(participant_id, session_id)
 
         # Calculate the hand positions relative to the apparatus frame
-        tracked_landmarks = {lm_id: lm for lm_id, lm in zip(session_data.tracked_landmark_ids,
-                                                            session_data.tracked_landmark_names)}
-        hand_data = TransformedHandData(participant_id, session_id, tracked_landmarks)
+        hand_data = TransformedHandData(session_data)
         hand_data.transform_hand_positions(session_data, scale_matrix, plot_landmarks)
 
-        # Save the transformed hand data
-        with open(os.path.join(fpath, fname), "wb") as f:
-            pickle.dump(hand_data, f)
+        # Calculate the speed of each landmark from the position data
+
+        # # Save the transformed hand data
+        # with open(os.path.join(fpath, fname), "wb") as f:
+        #     pickle.dump(hand_data, f)
 
 
 if __name__ == "__main__":
+    # Get the pipeline config files
+    pipeline_config = load_pipeline_config()
+
+    # Define an argparser
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-o", "--overwrite",
+        action="store_true",
+        help="If True, overwrite the existing data"
+    )
+    # TODO: add arg for landmarks to plot (must be int)
+    #  - use the hand_landmarks_tracked variable in session_data to get the name of the landmark
+    parser.add_argument(
+        "-lm", "--landmark_ids",
+        type=int,
+        nargs="*",
+        choices=list(pipeline_config.tracked_hand_landmarks.values()),
+        default=[],
+        help="IDs of hand landmark positions to plot after transformation"
+    )
+    args = parser.parse_args()
+
     # main({"Index Tip": 8})
-    main()
+    main(args.landmark_ids, args.overwrite)
