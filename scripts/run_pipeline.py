@@ -4,7 +4,10 @@ to the block videos, so that a visual inspection of the event onset timing, Apri
 and hand tracking can be performed before further processing the data. The primary output of
 this step is the hand tracking data, which is further processed in the next step."""
 
-from utils_pipeline import VideoProcessingPipeline, load_session_data
+import os
+import sys
+sys.path.insert(0, os.path.abspath(".."))
+from utils.pipeline import VideoProcessingPipeline, load_session_data
 from utils.data_loading import get_files_containing, load_pipeline_config, load_session_config
 
 
