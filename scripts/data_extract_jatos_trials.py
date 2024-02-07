@@ -366,7 +366,7 @@ def find_zero_runs(data: np.ndarray) -> np.ndarray:
     return ranges
 
 
-def load_session_trials(participant_id: str, session_id: str) -> TrialData | None:
+def load_session_trials(participant_id: str, session_id: str) -> list[list[TrialData]] | None:
     """Loads the jatos trial dataclasses for a particular session.
 
     Parameters
