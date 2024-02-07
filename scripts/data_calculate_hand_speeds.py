@@ -10,6 +10,10 @@ The standard unit of this frame of reference is the distance between the top-lef
 AprilTags at the top of the experimental apparatus (IDs 40 and 10). Since this distance is not the
 same in all video frames, all the position values are scaled to make them consistent and comparable.
 
+The last step in this script is to fit a cubic spline to the transformed hand position data, and
+calculate the landmark speeds. The cubic spline is chosen because it is guaranteed to be twice
+differentiable. Speeds are calculate for the x and y directions, as well as the combined total.
+
 There are many video frames where the AprilTags are not on the screen, covered, or undetected for
 some other reason. This will be accounted for in the next step. For now, these missing AprilTag
 reference positions are simply interpolated using the frame before and after the missed detections."""
@@ -26,11 +30,10 @@ from scipy.interpolate import splrep, BSpline
 sys.path.insert(0, os.path.abspath(".."))
 from utils.calculations import MIN_POSITION, get_basis_vectors
 from utils.data_loading import load_pipeline_config, get_files_containing
-from utils.pipeline import INDEX_FINGER_TIP_IDX, SessionData, load_session_data
+from utils.pipeline import SessionData, load_session_data
 
 
 DT_SPEED = 0.001
-# DT_SPEED = 0.004
 SMOOTHING = 4500
 
 
