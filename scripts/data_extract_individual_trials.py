@@ -8,6 +8,7 @@ from typing import Any
 from dataclasses import dataclass
 
 sys.path.insert(0, os.path.abspath(".."))
+from data_calculate_hand_speeds import TransformedHandData, load_transformed_hand
 from config.config_dataclasses import PostprocessingConfig
 from utils.pipeline import SessionData, load_session_data
 from utils.data_loading import get_files_containing, load_postprocessing_config
@@ -17,10 +18,17 @@ N_TRIALS = 40
 MAX_ZERO_DT = 6
 
 
+# TODO:
+#  - Save only the real set of dot pos
+#    -> Make a mask using the onset time and replace the first pos with the shifted pos
+#    -> Are the positions different in unshifted trials? (do I need to check for this?)
 @dataclass
 class TrialData:
     participant_id: str
     session_id: str
+    trial_time: np.ndarray
+    trial_hand_pos: dict[int, np.ndarray]
+    trial_hand_speed: dict[int, np.ndarray]
     trial_onset_dt: float
     trial_tap_times: np.ndarray
     trial_tap_pos: np.ndarray
@@ -47,11 +55,14 @@ def get_trial_data(
     # Get the event onset and time data for the session
     session_data = load_session_data(participant_id, session_id)
 
+    # Load the hand tracking data
+    hand_pos_data = load_transformed_hand(participant_id, session_id)
+
     # Separate the jatos data into blocks and trials
     jatos_blocks = parse_jatos_json(jatos_fpath)
 
     # Remove unused data from jatos events
-    filter_unparsed_blocks(postprocess_config, jatos_blocks)
+    filter_unparsed_blocks(jatos_blocks, postprocess_config)
 
     # Check that the jatos and diode data have the same number of blocks
     assert len(jatos_blocks) == len(session_data.event_onsets_blocks)
@@ -67,11 +78,11 @@ def get_trial_data(
         plot_event_onset_comparison(jatos_blocks, jatos_block_dts, session_data)
     else:
         # Extract the jatos data for each trial
-        jatos_session = extract_jatos_trial_data(jatos_blocks, jatos_block_dts, session_data)
+        session_trials = extract_trial_data(jatos_blocks, jatos_block_dts, session_data, hand_pos_data)
 
         # Save the transformed hand data
         with open(filename, "wb") as f:
-            pickle.dump(jatos_session, f)
+            pickle.dump(session_trials, f)
 
 
 def parse_jatos_json(jatos_path: str) -> list[list[dict[str, Any]]]:
@@ -101,16 +112,16 @@ def parse_jatos_json(jatos_path: str) -> list[list[dict[str, Any]]]:
 
 
 def filter_unparsed_blocks(
-        postprocess_config: PostprocessingConfig,
         jatos_data: list[list[dict[str, Any]]],
+        postprocess_config: PostprocessingConfig,
 ) -> None:
     """Removes blocks from jatos JSON data, which could not be parsed or had parsing errors.
 
     Parsing errors are identified during preprocessing of the diode and pipeline processing of videos.
 
     Parameters
-        postprocess_config (PostprocessingConfig): dataclass containing post-processing parameter values
         jatos_data (list[list[dict[str, Any]]]): parsed jatos data, separated into session blocks and trials
+        postprocess_config (PostprocessingConfig): dataclass containing post-processing parameter values
     """
 
     # Remove blocks that could not be parsed from the video/diode data
@@ -184,10 +195,11 @@ def plot_event_onset_comparison(
         plt.close()
 
 
-def extract_jatos_trial_data(
+def extract_trial_data(
         jatos_data: list[list[dict[str, Any]]],
         block_dts: list[float],
         session_data: SessionData,
+        hand_data: TransformedHandData,
 ) -> list[list[TrialData]]:
     """Extracts the data for individual trials from the jatos JSON data.
 
@@ -197,33 +209,41 @@ def extract_jatos_trial_data(
         jatos_data (list[list[dict[str, Any]]]): parsed jatos data, separated into session blocks and trials
         block_dts (list[float]): offsets required to sync diode and jatos data for each block
         session_data (SessionData): class containing the pipeline session data
+        hand_data (TransformedHandData): class containing the transformed hand data
 
     Returns
-        jatos_session (TrialData): individual trail data for each block and trial in the session
+        jatos_session (list[list[TrialData]]): individual trail data for each block and trial in the session
     """
 
-    jatos_session = []
-    block_itr = zip(jatos_data, session_data.reference_pos_abs, session_data.block_times, block_dts)
-    for block_trials, ref_pos_block, block_time, t0 in block_itr:
-        jatos_block_trials = []
-        for j, trial_dict in enumerate(block_trials):
+    session_trials = []
+    block_itr = zip(
+        jatos_data,
+        session_data.reference_pos_abs,
+        session_data.block_times,
+        block_dts,
+    )
+    for i, (jatos_block_trials, ref_pos_block, block_time, t0) in enumerate(block_itr):
+        block_trials = []
+        for trial_dict in jatos_block_trials:
             # Populate the TrialData class instance
-            trial_data = populate_trial_dataclass(trial_dict, session_data, t0)
+            trial_data = populate_trial_dataclass(trial_dict, session_data, t0, hand_data, i)
 
             # Determine whether the trial is unusable
             trial_inds = get_trial_inds(trial_dict, t0, block_time)
             is_trial_usable(trial_data, trial_inds, block_time, ref_pos_block)
 
-            jatos_block_trials.append(trial_data)
-        jatos_session.append(jatos_block_trials)
+            block_trials.append(trial_data)
+        session_trials.append(block_trials)
 
-    return jatos_session
+    return session_trials
 
 
 def populate_trial_dataclass(
         trial_dict: dict[str, Any],
         session_data: SessionData,
-        t0: float
+        t0: float,
+        hand_data: TransformedHandData,
+        n_block: int,
 ) -> TrialData:
     """Populates an instance of the TrialData dataclass.
 
@@ -240,10 +260,28 @@ def populate_trial_dataclass(
         trial_dict (dict[str, Any]): jatos JSON trial data
         session_data (SessionData): class containing the pipeline session data
         t0 (float): time offset between end of AprilTags and first event onset in diode data
+        hand_data (TransformedHandData): class containing the transformed hand data
+        n_block (int): index of the block of trials currently being extracted
 
     Returns
         trial_data (TrialData): class containing the individual trail data
     """
+
+    # Get the trial indices
+    trial_inds = get_trial_inds(trial_dict, t0, hand_data.time_interpolated[n_block])
+
+    # Extract the hand and reference data for the trial
+    hand_pos_trial = {}
+    hand_speed_trial = {}
+    for landmark_id in hand_data.hand_landmarks.values():
+        hand_pos_trial[landmark_id] = hand_data.hand_pos_interpolated[n_block][landmark_id][:, trial_inds]
+        try:
+            hand_speed_trial[landmark_id] = hand_data.hand_speed[n_block][landmark_id][:, trial_inds]
+        except IndexError:
+            if trial_inds[-1] == hand_data.hand_speed[n_block][landmark_id].shape[1]:
+                hand_speed_trial[landmark_id] = hand_data.hand_speed[n_block][landmark_id][:, trial_inds[:-1]]
+            else:
+                raise IndexError
 
     # Calculate the pixel offsets for the center of the screen
     x_center = trial_dict["windowWidth"] / 2
@@ -268,6 +306,9 @@ def populate_trial_dataclass(
     trial_data = TrialData(
         participant_id=session_data.participant_id,
         session_id=session_data.session_id,
+        trial_time=hand_data.time_interpolated[n_block][trial_inds],
+        trial_hand_pos=hand_pos_trial,
+        trial_hand_speed=hand_speed_trial,
         trial_onset_dt=dt_onset,
         trial_tap_times=(np.stack(trial_dict["touchOn"]) + touch_dts) / 1000 - t0,
         trial_tap_pos=np.stack(
@@ -374,7 +415,7 @@ def load_session_trials(participant_id: str, session_id: str) -> list[list[Trial
         session_id (str): session identifier ["A1", "A2", "B1", "B2"]
 
     Returns
-        (TrialData): class containing the individual trail data
+        (list[list[TrialData]]): individual trail data for each block and trial in the session
     """
 
     session_path = f"../data/pipeline_data/{participant_id}/{session_id}/{participant_id}_{session_id}_trial_data.pkl"
@@ -385,8 +426,12 @@ def load_session_trials(participant_id: str, session_id: str) -> list[list[Trial
         return None
 
 
-def main(plot_onsets: bool):
-    """Parses and extracts the required data from a jatos JSON file."""
+def main(plot_onsets: bool) -> None:
+    """Parses and extracts the required data from a jatos JSON file.
+
+    Parameters
+        plot_onsets (bool): if True, plot a visual comparison of the jatos and diode event onset times
+    """
 
     jatos_paths, jatos_files = get_files_containing("../data/original_data", "jatos")
     for jatos_path, jatos_file in zip(jatos_paths, jatos_files):
