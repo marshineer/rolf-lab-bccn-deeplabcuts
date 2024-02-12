@@ -14,6 +14,7 @@ def get_fourcc(cap: cv2.VideoCapture) -> str:
     Returns
         (str): the fourcc codec of the mp4 video
     """
+
     fourcc_codec = int(cap.get(cv2.CAP_PROP_FOURCC))
     return fourcc_codec.to_bytes(4, byteorder=sys.byteorder).decode()
 
@@ -22,7 +23,11 @@ def get_top_left_coords(corners: list[list]):
     """Finds the top left corner coordinates in a list of rectagle vertices (x, y).
 
     The origin is the top left corner of the video frame, so this function uses that to determine
-    the top left corner of the rectangle. Whichever corner is closest to the origin, is the top left.
+    the top left corner of the rectangle. First, the two corners with the lowest y-coordinates
+    are found. Of these two corners, the one with the lowest x-coordinate is chosen as the top-
+    left corner. This strategy works unless the camera is extremely tilted, in which case, there
+    is a high probability that at least one AprilTag is out of the frame, making the data unusable
+    anyway.
 
     Parameters
         corners (list[list]): list of the rectangle's vertices
@@ -30,8 +35,11 @@ def get_top_left_coords(corners: list[list]):
     Returns
         top_left_ind (int): index of the top left corner coordinates
     """
-    min_dists = [distance_2d(x, y) for x, y in corners]
-    return corners[np.argmin(min_dists)]
+
+    min_y_inds = np.argsort(corners[:, 1])[:2]
+    min_y_corners = corners[min_y_inds, :]
+    min_x_ind = np.argmin(min_y_corners[:, 0])
+    return min_y_corners[min_x_ind, :]
 
 
 def distance_2d(x1: float, y1: float, x2: float = 0, y2: float = 0):
@@ -46,7 +54,22 @@ def distance_2d(x1: float, y1: float, x2: float = 0, y2: float = 0):
     Returns
         dist (float): distance between the points
     """
+
     return np.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
+
+
+def calculate_time_derivative(time_data: np.ndarray, position_data: np.ndarray) -> np.ndarray:
+    """Calculates speed from position data.
+
+    Parameters
+        time_data (np.ndarray): time vector associated with the postion data
+        position_data (np.ndarray): single dimension positon data
+
+    Returns
+        (np.ndarray): vector of speed at each time point
+    """
+
+    return np.diff(position_data) / np.diff(time_data)
 
 
 def get_basis_vectors(
