@@ -20,6 +20,7 @@ reference positions are simply interpolated using the frame before and after the
 
 import os
 import sys
+import cv2
 import pickle
 import pathlib
 import argparse
@@ -28,16 +29,16 @@ import matplotlib.pyplot as plt
 from scipy.interpolate import splrep, BSpline
 
 sys.path.insert(0, os.path.abspath(".."))
-from utils.calculations import MIN_POSITION, get_basis_vectors
-from utils.data_loading import load_pipeline_config, get_files_containing
-from utils.pipeline import SessionData, load_session_data
+from utils.calculations import MIN_POSITION, get_basis_vectors, calculate_time_derivative, distance_2d
+from utils.data_loading import load_pipeline_config, get_files_containing, load_block_video_mp4
+from utils.pipeline import SessionData, load_session_data, INDEX_FINGER_TIP_IDX
 
 
 DT_SPEED = 0.001
 SMOOTHING = 4500
+BASIS_RATIO = 1 / 0.94
 
 
-# TODO: change this to calculate_hand_speeds.py, and add hand speed calculations
 class TransformedHandData:
     """This class stores the transformed hand landmark data.
 
@@ -61,17 +62,18 @@ class TransformedHandData:
         self.session_id: str = session_data.session_id
         self.hand_landmarks: dict[str, int] = session_data.tracked_landmarks
         self.time_video: list[np.ndarray] = []
-        self.hand_pos: list[dict[int, np.ndarray]] = []
-        self.ref_pos: list[dict[int, np.ndarray]] = []
+        self.hand_position: list[dict[int, np.ndarray]] = []
+        self.ref_position: list[dict[int, np.ndarray]] = []
         self.time_interpolated: list[np.ndarray] = []
         self.hand_pos_interpolated: list[dict[int, np.ndarray]] = []
         self.hand_speed: list[dict[int, np.ndarray]] = []
 
     def transform_hand_positions(
             self,
-            session_data_class: SessionData,
+            session_data: SessionData,
             reference_scale_matrix: np.ndarray,
             plot_landmarks: list[int] = None,
+            plot_vectors: bool = False,
     ) -> None:
         """Calculates hand positions relative to a reference point.
 
@@ -92,68 +94,144 @@ class TransformedHandData:
         define the coordinates of a reference frame are provided in the order [origin, v1, v2].
 
         Parameters
-            session_data_class (SessionData): class containing the pipeline session data
+            session_data (SessionData): class containing the pipeline session data
             reference_scale_matrix (np.ndarray): matrix used to scale the transformed positions
             plot_landmarks (dict[str, int]): hand landmarks to plot
         """
 
         itr_lists = zip(
-            session_data_class.hand_landmark_pos_abs,
-            session_data_class.reference_pos_abs,
-            session_data_class.block_times,
-            session_data_class.first_trial_frame.values(),
+            session_data.hand_landmark_pos_abs,
+            session_data.reference_pos_abs,
+            session_data.block_times,
+            session_data.first_trial_frame.values(),
         )
         for block, (lm_pos, ref_pos, time_vec, ind0) in enumerate(itr_lists):
             # Determine which AprilTag is the best reference
-            reference_tag_id = session_data_class.apparatus_tag_ids[0]
+            reference_tag_id = session_data.apparatus_tag_ids[0]
 
-            # Interpolate the missing reference AprilTag positions
-            interp_ref_pos = {}
-            for tag_id in session_data_class.apparatus_tag_ids:
-                interp_ref_pos[tag_id] = interpolate_pos(time_vec, ref_pos[tag_id])[:, ind0:]
+            # TODO: Refactor this function
+            # Plot the frame with the transformed vectors (for visual check)
+            if plot_vectors:
+                # Define the position of the index fingertip
+                tip_pos = session_data.hand_landmark_pos_abs[block][INDEX_FINGER_TIP_IDX]
+                tip_pos_trans = np.zeros_like(tip_pos)
+                # tip_pos_rel = tip_pos - ref_pos[reference_tag_id]
+                tip_pos_rel = tip_pos
 
-            # Rotate the frame to be square to the apparatus' AprilTags
-            position_shape = interp_ref_pos[reference_tag_id].shape
-            transformed_lm_pos = {lm: np.zeros(position_shape) for lm in session_data_class.tracked_landmarks.values()}
-            rotated_ref_pos = {tag: np.zeros(position_shape) for tag in session_data_class.apparatus_tag_ids}
-            for i in range(position_shape[1]):
-                # Calculate the transformation matrix for each frame
-                transformation_matrix = get_transformation_matrix(
-                    interp_ref_pos,
-                    i,
-                    session_data_class.apparatus_tag_ids,
-                    reference_scale_matrix,
-                )
+                # Initialize the transformed reference positions
+                ref_pos_trans = {tag: np.zeros_like(tip_pos) for tag in session_data.apparatus_tag_ids}
+                origin_id, v2_id, v1_id = session_data.apparatus_tag_ids
 
-                # Transform hand landmarks
-                for lbl, lm in session_data_class.tracked_landmarks.items():
-                    # Interpolate the hand landmark positions
-                    lm_xy = interpolate_pos(time_vec, lm_pos[lm])[:, ind0:]
-                    # Translate the coordinates to the origin of the reference frame
-                    rel_xy = lm_xy - interp_ref_pos[reference_tag_id]
-                    # Transform the coordinates into the reference frame
-                    transformed_lm_pos[lm][:, i] = transformation_matrix @ rel_xy[:, i]
+                # Load the block video
+                vcap = load_block_video_mp4(session_data.participant_id, session_data.session_id, block)
+                width = int(vcap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                height = int(vcap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-                # Transform reference AprilTags
-                for tag_id in session_data_class.apparatus_tag_ids:
-                    rotated_ref_pos[tag_id][:, i] = transformation_matrix @ interp_ref_pos[tag_id][:, i]
+                i = 0
+                while vcap.isOpened():
+                    ret, frame = vcap.read()
+                    if i >= ind0:
+                        print(f"\nFrame {i + 1}, Block time: {time_vec[i]:0.3f}")
+                        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+                        ax.set_xlim([-1, width])
+                        ax.set_ylim([height, -1])
+                        ax.imshow(frame)
 
-            if plot_landmarks is not None:
-                landmark_names_ids = {name: lm for name, lm in self.hand_landmarks.items() if lm in plot_landmarks}
-                fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-                for landmark_name, landmark_id in landmark_names_ids.items():
-                    ax.plot(time_vec[ind0:], transformed_lm_pos[landmark_id][0, :], label=f"X: {landmark_name}")
-                    ax.plot(time_vec[ind0:], transformed_lm_pos[landmark_id][1, :], label=f"Y: {landmark_name}")
-                ax.set_title(f"{self.participant_id}-{self.session_id}, Block {block}")
-                ax.legend()
-                plt.show()
-                plt.close()
+                        # Calculate the transformation matrix for each frame
+                        basis_v1, basis_v2 = get_basis_vectors(ref_pos, i, session_data.apparatus_tag_ids)
+                        rotation_matrix = np.stack((basis_v1, basis_v2)).T
+                        transformation_matrix = np.linalg.inv(rotation_matrix @ reference_scale_matrix)
+
+                        # Transform hand landmark (finger tip) and references
+                        tip_pos_trans[:, i] = transformation_matrix @ tip_pos_rel[:, i]
+                        print(f"Tip position (x, y) = ({tip_pos_rel[0, i]:0.3f}, {tip_pos_rel[1, i]:0.3f})")
+                        print(f"Tip position (x, y) = ({tip_pos_trans[0, i]:0.3f},"
+                              f" {tip_pos_trans[1, i]:0.3f}) (transformed)")
+                        for tag_id in session_data.apparatus_tag_ids:
+                            ref_pos_trans[tag_id][:, i] = transformation_matrix @ ref_pos[tag_id][:, i]
+                        v1_norm = np.linalg.norm(ref_pos[v1_id][:, i] - ref_pos[origin_id][:, i])
+                        v2_norm = np.linalg.norm(ref_pos[v2_id][:, i] - ref_pos[origin_id][:, i])
+                        v1_norm_trans = np.linalg.norm(ref_pos_trans[v1_id][:, i] - ref_pos_trans[origin_id][:, i])
+                        v2_norm_trans = np.linalg.norm(ref_pos_trans[v2_id][:, i] - ref_pos_trans[origin_id][:, i])
+                        print(f"Basis v1 norm {v1_norm:0.3f}")
+                        print(f"Basis v2 norm {v2_norm:0.3f}")
+                        print(f"Basis v1 scaled norm {v1_norm_trans:0.3f}")
+                        print(f"Basis v2 scaled norm {v2_norm_trans:0.3f}")
+                        print(f"Reference vector length ratio before and after scaling: "
+                              f"{v2_norm / v1_norm:0.2f} and {v2_norm_trans /  v1_norm_trans:0.2f} respectively")
+
+                        ax.plot([ref_pos[origin_id][0, i], ref_pos[v1_id][0, i]],
+                                [ref_pos[origin_id][1, i], ref_pos[v1_id][1, i]], 'r')
+                        ax.plot([ref_pos[origin_id][0, i], ref_pos[v2_id][0, i]],
+                                [ref_pos[origin_id][1, i], ref_pos[v2_id][1, i]], 'r')
+                        ax.plot([ref_pos[origin_id][0, i], tip_pos[0, i]],
+                                [ref_pos[origin_id][1, i], tip_pos[1, i]], 'r')
+                        # ax.plot([0, ref_pos_trans[v1_id][0, i] - ref_pos_trans[origin_id][0, i]],
+                        #         [0, ref_pos_trans[v1_id][1, i] - ref_pos_trans[origin_id][1, i]], 'b')
+                        # ax.plot([0, ref_pos_trans[v2_id][0, i] - ref_pos_trans[origin_id][0, i]],
+                        #         [0, ref_pos_trans[v2_id][1, i] - ref_pos_trans[origin_id][1, i]], 'b')
+                        # ax.plot([0, tip_pos[0, i] - ref_pos[origin_id][0, i]],
+                        #         [0, tip_pos[1, i] - ref_pos[origin_id][1, i]], 'g--')
+                        # ax.plot([0, tip_pos_trans[0, i]], [0, tip_pos_trans[1, i]], 'g')
+                        ax.plot([ref_pos_trans[origin_id][0, i], ref_pos_trans[v1_id][0, i]],
+                                [ref_pos_trans[origin_id][1, i], ref_pos_trans[v1_id][1, i]], 'b')
+                        ax.plot([ref_pos_trans[origin_id][0, i], ref_pos_trans[v2_id][0, i]],
+                                [ref_pos_trans[origin_id][1, i], ref_pos_trans[v2_id][1, i]], 'b')
+                        ax.plot([ref_pos_trans[origin_id][0, i], tip_pos_trans[0, i]],
+                                [ref_pos_trans[origin_id][1, i], tip_pos_trans[1, i]], 'g')
+                        plt.show()
+                    i += 1
+
             else:
+                # Interpolate the missing reference AprilTag positions
+                interp_ref_pos = {}
+                for tag_id in session_data.apparatus_tag_ids:
+                    interp_ref_pos[tag_id] = interpolate_pos(time_vec, ref_pos[tag_id])[:, ind0:]
+
+                # Interpolate the hand landmark coordinates and translate them to the origin of the reference frame
+                transformed_lm_pos = {}
+                for lbl, lm in session_data.tracked_landmarks.items():
+                    lm_xy = interpolate_pos(time_vec, lm_pos[lm])[:, ind0:]
+                    transformed_lm_pos[lm] = lm_xy - interp_ref_pos[reference_tag_id]
+
+                # Rotate the frame to be square to the apparatus' AprilTags
+                position_shape = interp_ref_pos[reference_tag_id].shape
+                # transformed_lm_pos = {lm: np.zeros(position_shape) for lm in session_data.tracked_landmarks.values()}
+                rotated_ref_pos = {tag: np.zeros(position_shape) for tag in session_data.apparatus_tag_ids}
+
+                for i in range(position_shape[1]):
+                    # Calculate the transformation matrix for each frame
+                    transformation_matrix = get_transformation_matrix(
+                        interp_ref_pos,
+                        i,
+                        session_data.apparatus_tag_ids,
+                        reference_scale_matrix,
+                    )
+
+                    # Transform hand landmarks
+                    for lbl, lm in session_data.tracked_landmarks.items():
+                        # Transform the coordinates into the reference frame
+                        transformed_lm_pos[lm][:, i] = transformation_matrix @ transformed_lm_pos[lm][:, i]
+
+                    # Transform reference AprilTags
+                    for tag_id in session_data.apparatus_tag_ids:
+                        rotated_ref_pos[tag_id][:, i] = transformation_matrix @ interp_ref_pos[tag_id][:, i]
+
+                if plot_landmarks is not None:
+                    landmark_names_ids = {name: lm for name, lm in self.hand_landmarks.items() if lm in plot_landmarks}
+                    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+                    for landmark_name, landmark_id in landmark_names_ids.items():
+                        ax.plot(time_vec[ind0:], transformed_lm_pos[landmark_id][0, :], label=f"X: {landmark_name}")
+                        ax.plot(time_vec[ind0:], transformed_lm_pos[landmark_id][1, :], label=f"Y: {landmark_name}")
+                    ax.set_title(f"{self.participant_id}-{self.session_id}, Block {block}")
+                    ax.legend()
+                    plt.show()
+                    plt.close()
                 print(f"{self.participant_id}-{self.session_id}, Block {block}")
 
-            self.time_video.append(time_vec[ind0:])
-            self.hand_pos.append(transformed_lm_pos)
-            self.ref_pos.append(rotated_ref_pos)
+                self.time_video.append(time_vec[ind0:])
+                self.hand_position.append(transformed_lm_pos)
+                self.ref_position.append(rotated_ref_pos)
 
     def calculate_hand_speeds(self, session_data: SessionData) -> None:
         """Calculates the speed of each hand landmark.
@@ -163,12 +241,14 @@ class TransformedHandData:
         """
 
         # Calculate the index fingertip speed
-        for block_time, hand_pos, onset_times in zip(self.time_video, self.hand_pos, session_data.event_onsets_blocks):
+        block_itrs = zip(self.time_video, self.hand_position, session_data.event_onsets_blocks)
+        for block_time, hand_pos, onset_times in block_itrs:
             # Interpolate the time to be used in the spline (video resolution is too low for differentiation)
             time_interpolated = np.arange(block_time[0], block_time[-1], DT_SPEED)
 
             lm_pos_interpolated = {}
             lm_hand_speed = {}
+            # lm_hand_acc = {}
             for landmark_name, landmark_id in self.hand_landmarks.items():
                 # Separate the x and y position data into 1D vectors
                 x_tip, y_tip = hand_pos[landmark_id][0, :], hand_pos[landmark_id][1, :]
@@ -183,8 +263,8 @@ class TransformedHandData:
                 lm_pos_interpolated[landmark_id] = np.stack((x_spline, y_spline), axis=0)
 
                 # Calculate the x, y and combined speeds
-                x_speed = calculate_speed(time_interpolated, x_spline)
-                y_speed = calculate_speed(time_interpolated, y_spline)
+                x_speed = calculate_time_derivative(time_interpolated, x_spline)
+                y_speed = calculate_time_derivative(time_interpolated, y_spline)
                 total_speed = np.sqrt(x_speed ** 2 + y_speed ** 2)
                 lm_hand_speed[landmark_id] = np.stack((x_speed, y_speed, total_speed), axis=0)
 
@@ -253,6 +333,14 @@ def get_scaling_matrix(
 ) -> np.ndarray:
     """Calculates a scaling matrix, given a set of basis vectors.
 
+    In the true apparatus setup, the ratio of lengths between the v1 basis and the v2 basis is ~0.94.
+    This value is approximate, and was derived from the image of the experimental setup. A scaling
+    factor is included in the transformation matrix, to account for this difference of basis lengths.
+
+    The v1 basis is defined as the horizontal distance between the top-left corners of the top two
+    apparatus AprilTags. The v2 basis is defined as the vertical distance between the top-left corners
+    of the two left-most (right-most if the participant is left handed) apparatus AprilTags.
+
     Parameters
         reference_coordinates (dict[int, np.ndarray]): top-left corner coordinates of the three reference AprilTags
         index (int): video frame index to calculate for
@@ -264,7 +352,31 @@ def get_scaling_matrix(
 
     basis_v1, basis_v2 = get_basis_vectors(reference_coordinates, index, reference_tag_ids)
 
-    return np.diag([1 / np.linalg.norm(basis_v1), 1 / np.linalg.norm(basis_v2)])
+    return np.diag([1 / np.linalg.norm(basis_v1), BASIS_RATIO / np.linalg.norm(basis_v1)])
+
+
+def cubic_spline_filter(
+        time_existing: np.ndarray,
+        position_existing: np.ndarray,
+        time_interpolated: np.ndarray,
+        smoothing: int,
+) -> np.ndarray:
+    """Interpolates and fits a cubic spline to the hand landmark position data.
+
+    Reference: https://docs.scipy.org/doc/scipy/tutorial/interpolate/smoothing_splines.html
+
+    Parameters
+        time_existing (np.ndarray): time vector for the existing position data
+        position_existing (np.ndarray): position data for the hand landmarks
+        time_interpolated (np.ndarray): interpolated time vector over which to fit the spline
+        smoothing (int): spline smoothing factor
+
+    Returns
+        (np.ndarray): filtered and interpolated position data
+    """
+
+    tck = splrep(time_existing, position_existing, s=smoothing)
+    return BSpline(*tck, extrapolate=False)(time_interpolated)
 
 
 def load_transformed_hand(participant_id: str, session_id: str) -> TransformedHandData | None:
@@ -287,40 +399,7 @@ def load_transformed_hand(participant_id: str, session_id: str) -> TransformedHa
         return None
 
 
-def cubic_spline_filter(
-        time_existing: np.ndarray,
-        position_existing: np.ndarray,
-        time_interpolated: np.ndarray,
-        smoothing: int,
-) -> np.ndarray:
-    """Interpolates and fits a cubic spline to the hand landmark position data.
-
-    Reference: https://docs.scipy.org/doc/scipy/tutorial/interpolate/smoothing_splines.html
-
-    Parameters
-        time_existing (np.ndarray): time vector for the existing position data
-        position_existing (np.ndarray): position data for the hand landmarks
-        time_interpolated (np.ndarray): interpolated time vector over which to fit the spline
-        smoothing (int): spline smoothing factor
-    """
-    tck = splrep(time_existing, position_existing, s=smoothing)
-    return BSpline(*tck, extrapolate=False)(time_interpolated)
-
-
-def calculate_speed(time_data: np.ndarray, position_data: np.ndarray) -> np.ndarray:
-    """Calculates speed from position data.
-
-    Parameters
-        time_data (np.ndarray): time vector associated with the postion data
-        position_data (np.ndarray): single dimension positon data
-
-    Returns
-        (np.ndarray): vector of speed at each time point
-    """
-    return np.diff(position_data) / np.diff(time_data)
-
-
-def main(plot_landmarks: list[int], overwrite_data: bool):
+def main(plot_landmarks: list[int], plot_vectors: bool, overwrite_data: bool):
     """Script that transforms the hand postions to a consistent frame of reference.
 
     The frame of reference used is the AprilTags set on the corners of the experimental apparatus.
@@ -335,21 +414,24 @@ def main(plot_landmarks: list[int], overwrite_data: bool):
     # Load the scaling matrix, or create it, if one does not already exist
     scaling_matrix_fpath = "../data/combined_sessions"
     scaling_matrix_fname = "scaling_matrix.pkl"
-    if os.path.exists(scaling_matrix_fpath):
+    if os.path.exists(os.path.join(scaling_matrix_fpath, scaling_matrix_fname)):
         with open(os.path.join(scaling_matrix_fpath, scaling_matrix_fname), "rb") as f:
             scale_matrix = pickle.load(f)
     else:
         with open(os.path.join(fpaths[0], files[0]), "rb") as f:
             reference_data: SessionData = pickle.load(f)
         scale_matrix = get_scaling_matrix(reference_data.reference_pos_abs[0], 0, reference_data.apparatus_tag_ids)
-        pathlib.Path(scaling_matrix_fpath).mkdir(parents=True)
+        pathlib.Path(scaling_matrix_fpath).mkdir(parents=True, exist_ok=True)
         with open(os.path.join(scaling_matrix_fpath, scaling_matrix_fname), "wb") as f_scaling:
             pickle.dump(scale_matrix, f_scaling)
+    print(f"Scaling matrix:\n{scale_matrix}")
 
     for fpath, file in zip(fpaths, files):
         # Skip data that has already been transformed
         participant_id, session_id = fpath.split("/")[-2:]
         fname = f"{participant_id}_{session_id}_transformed_hand_data.pkl"
+        if "backup" in fpath:
+            continue
         if not overwrite_data and os.path.exists(os.path.join(fpath, fname)):
             print(f"{fname} already exists")
             continue
@@ -359,7 +441,7 @@ def main(plot_landmarks: list[int], overwrite_data: bool):
 
         # Calculate the hand positions relative to the apparatus frame
         hand_data = TransformedHandData(session_data)
-        hand_data.transform_hand_positions(session_data, scale_matrix, plot_landmarks)
+        hand_data.transform_hand_positions(session_data, scale_matrix, plot_landmarks, plot_vectors)
 
         # Calculate the speed of each landmark from the position data
         hand_data.calculate_hand_speeds(session_data)
@@ -381,6 +463,11 @@ if __name__ == "__main__":
         help="If True, overwrite the existing data"
     )
     parser.add_argument(
+        "-p", "--plot_vectors",
+        action="store_false",
+        help="If True, plot the transformed vectors for each video frame"
+    )
+    parser.add_argument(
         "-lm", "--landmark_ids",
         type=int,
         nargs="*",
@@ -389,4 +476,4 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    main(args.landmark_ids, args.overwrite)
+    main(args.landmark_ids, args.plot_vectors, args.overwrite)
