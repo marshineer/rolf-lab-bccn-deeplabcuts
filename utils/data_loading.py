@@ -78,6 +78,21 @@ def load_video_mp4(participant_id: str, session_id: str) -> cv2.VideoCapture:
     return cv2.VideoCapture(video_path)
 
 
+def load_block_video_mp4(participant_id: str, session_id: str, block_id: int) -> cv2.VideoCapture:
+    """Loads the pipeline processed block video as an OpenCV video capture object.
+
+    Parameters
+        participant_id (str): unique participant identifier "PXX"
+        session_id (str): session identifier ["A1", "A2", "B1", "B2"]
+        block_id (int): block identifier
+
+    Returns
+        (cv2.VideoCapture): single video file for an experimental session
+    """
+    video_path = f"../data/pipeline_data/{participant_id}/{session_id}/block_videos/block_{block_id}.mp4"
+    return cv2.VideoCapture(video_path)
+
+
 def load_pipeline_config(print_config: bool = True) -> PipelineConfig:
     """Loads the pipeline configuration dataclass from a JSON file.
 
