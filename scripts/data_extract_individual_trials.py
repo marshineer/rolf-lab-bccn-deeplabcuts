@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import pickle
+import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 from typing import Any
@@ -16,11 +17,11 @@ from utils.split_diode_blocks import MIN_TRIALS, MIN_TRIAL_SEPARATION
 
 
 MAX_ZERO_DT = 6
-MAX_SPEED = 500
+MAX_SPEED = 800
+MAX_SPEED_END_TIME = 0.1
 
 
 # TODO:
-#  - Add overwrite parameter in argparse
 #  - Add docstring to module
 #  - Add plotting function
 #     -> Histogram of differences between diode onsets and each jatos onset type (flash on, flash off, change)
@@ -48,19 +49,21 @@ def get_session_trials(
         participant_id: str,
         session_id: str,
         jatos_fpath: str,
+        unusable_counts: dict[str, int],
         plot_onsets: bool = False
-) -> None:
+) -> list[list[TrialData]]:
     """Extracts the individual trial data for a particular session.
 
     Parameters
         participant_id (str): unique participant identifier "PXX"
         session_id (str): session identifier ["A1", "A2", "B1", "B2"]
         jatos_fpath (str): filepath to the jatos JSON data
+        unusable_counts (dict[str, int]): counts for each type of unusable trial
         plot_onsets (bool): if True, plot a visual comparison of the jatos and diode change onset times
-    """
 
-    # Define the file name
-    filename = f"../data/pipeline_data/{participant_id}/{session_id}/{participant_id}_{session_id}_trial_data.pkl"
+    Returns
+        session_trials (list[TrialData]): individual trail data for the session, separated by block
+    """
 
     # Load the post-processing config
     postprocess_config = load_postprocessing_config(f"../data/pipeline_data/{participant_id}/{session_id}", False)
@@ -98,13 +101,18 @@ def get_session_trials(
                         session_data.apriltag123_visible[n_block],
                         session_data.block_times[n_block]
                     )
-
-        block_trials = extract_block_trials(jatos_block, session_data, hand_data, jatos_t0, n_block, plot_onsets)
+        block_trials = extract_block_trials(
+                            jatos_block,
+                            session_data,
+                            hand_data,
+                            jatos_t0,
+                            n_block,
+                            unusable_counts,
+                            plot_onsets
+                        )
         session_trials.append(block_trials)
 
-    # Save the transformed hand data
-    with open(filename, "wb") as f:
-        pickle.dump(session_trials, f)
+    return session_trials
 
 
 def parse_jatos_json(jatos_path: str) -> tuple[list[list[dict[str, Any]]], list[np.ndarray]]:
@@ -226,6 +234,7 @@ def extract_block_trials(
         hand_data: TransformedHandData,
         jatos_t0: float,
         n_block: int,
+        unusable_counts: dict[str, int],
         plot_onsets: bool,
 ) -> list[TrialData]:
     """Extracts the data for individual trials from the jatos JSON data.
@@ -233,11 +242,12 @@ def extract_block_trials(
     The data extracted by this function will be used in later analyses.
 
     Parameters
-        jatos_data (list[list[dict[str, Any]]]): parsed jatos data, separated into session blocks and trials
+        jatos_block (list[dict[str, Any]]): parsed jatos data containing all trials for the given block
         block_dts (list[float]): offsets required to sync diode and jatos data for each block
         session_data (SessionData): class containing the pipeline session data
         hand_data (TransformedHandData): class containing the transformed hand data
         n_block (int): index of the block of trials currently being extracted
+        unusable_counts (dict[str, int]): counts for each type of unusable trial
         plot_onsets (bool): if True, plot a visual comparison of the jatos and diode event onset times
 
     Returns
@@ -256,7 +266,8 @@ def extract_block_trials(
                             hand_data,
                             change_times[n_trial],
                             jatos_t0,
-                            n_block
+                            n_block,
+                            unusable_counts,
                         )
 
         block_trials.append(trial_data)
@@ -424,6 +435,7 @@ def populate_trial_dataclass(
         change_time: float,
         jatos_t0: float,
         n_block: int,
+        unusable_counts: dict[str, int],
 ) -> TrialData:
     """Populates an instance of the TrialData dataclass.
 
@@ -443,6 +455,7 @@ def populate_trial_dataclass(
         change_time (float): block time at which the change onset occurs
         jatos_t0 (float): offset required to sync diode and jatos trial data for the block
         n_block (int): index of the block of trials currently being extracted
+        unusable_counts (dict[str, int]): counts for each type of unusable trial
 
     Returns
         trial_data (TrialData): class containing the individual trail data
@@ -455,16 +468,25 @@ def populate_trial_dataclass(
     trial_inds = get_trial_inds(hand_data.time_interpolated[n_block], t_start, t_end)
 
     # Extract the hand kinematic data for the trial
+    trial_time = hand_data.time_interpolated[n_block][trial_inds]
+    hand_pos_trial, hand_speed_trial = get_hand_kinematics(hand_data, n_block, trial_inds)
+
+    # If high speeds occur at the end of trials, trim and update inds
+    trial_time, trial_inds = trim_high_speed_trials(hand_speed_trial, trial_time, trial_inds)
     hand_pos_trial, hand_speed_trial = get_hand_kinematics(hand_data, n_block, trial_inds)
 
     # Calculate the tap times
     tap_times_on, tap_times_off = get_tap_times(trial_dict, jatos_t0)
 
+    # Determine phone screen dimensions
+    x_pixel_range = trial_dict["windowWidth"] / 2
+    y_pixel_range = trial_dict["windowHeight"] / 2
+
     # Calculate tap positions
-    tap_positions = get_tap_positions(trial_dict)
+    tap_positions = get_tap_positions(trial_dict, x_pixel_range, y_pixel_range)
 
     # Calculate the true dot positions
-    dot_positions = get_dot_positions(trial_dict, tap_times_on, change_time)
+    dot_positions = get_dot_positions(trial_dict, tap_times_on, change_time, max(x_pixel_range, y_pixel_range))
 
     # Populate the trial dataclass
     trial_data = TrialData(
@@ -473,7 +495,7 @@ def populate_trial_dataclass(
         block_id=n_block,
         start_time=t_start,
         end_time=t_end,
-        time_vec=hand_data.time_interpolated[n_block][trial_inds],
+        time_vec=trial_time,
         hand_positions=hand_pos_trial,
         hand_speeds=hand_speed_trial,
         change_time=change_time,
@@ -488,17 +510,7 @@ def populate_trial_dataclass(
     # Determine whether the trial is unusable
     block_time = session_data.block_times[n_block]
     trial_inds_video = get_trial_inds(block_time, t_start, t_end)
-    is_trial_usable(trial_data, trial_inds_video, block_time, session_data.reference_pos_abs[n_block])
-
-    # # Plot the trial
-    # fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-    # aligned_time = trial_data.time_vec - trial_data.change_time
-    # plot_speed = trial_data.hand_speeds[8][-1, :]
-    # ax.plot(aligned_time, plot_speed)
-    # ax.vlines(0, np.min(plot_speed), np.max(plot_speed), 'r')
-    # ax.set_title(f"{trial_data.participant_id}-{trial_data.session_id}, Block {trial_data.block_id}")
-    # plt.show()
-    # plt.close()
+    is_trial_usable(trial_data, trial_inds_video, block_time, session_data.reference_pos_abs[n_block], unusable_counts)
 
     return trial_data
 
@@ -546,14 +558,14 @@ def get_trial_inds(block_time: np.ndarray, trial_start_time: float, trial_end_ti
 def get_hand_kinematics(
         hand_data: TransformedHandData,
         n_block: int,
-        trial_inds: np.ndarray
+        trial_inds: np.ndarray,
 ) -> tuple[dict[int, np.ndarray], dict[int, np.ndarray]]:
     """Extracts the kinematic hand data for a particular trial.
 
     Parameters
         hand_data (TransformedHandData): class containing the transformed hand data
         n_block (int): index of the block of trials currently being extracted
-        trial_inds (np.ndarray): indices in the block time vector associated with the trial
+        trial_inds (np.ndarray): indices of the block time and hand position data associated with the trial
 
     Returns
         hand_pos_trial (dict[int, np.ndarray]): transformed hand landmark position data for the trial
@@ -573,6 +585,41 @@ def get_hand_kinematics(
                 raise IndexError
 
     return hand_pos_trial, hand_speed_trial
+
+
+def trim_high_speed_trials(
+        hand_speeds: dict[int, np.ndarray],
+        trial_time: np.ndarray,
+        trial_inds: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Trims and updates trial indices when high hand landmark speeds occur at the end of trials.
+
+    The trial end times are not super accurate, so the trial often ends before the end time listed
+    in the jatos JSON data. In this case, the participant often drops their hand very quickly,
+    resulting in hand speeds greater than the imposed limit. In order to avoid marking these trials
+    as unusable, if the high hand speeds occur shortly before the end of the trial, the trial is
+    trimmed, so that it does not get marked as "unusable" in a later step.
+
+    Parameters
+        hand_data (TransformedHandData): class containing the transformed hand data
+        trial_time (np.ndarray): block times associated with the trial
+        trial_inds (np.ndarray): indices of the block time and hand position data associated with the trial
+
+    Returns
+        trial_time (np.ndarray): trimmed trial time vector
+        trial_inds (np.ndarray): updated trial indices
+    """
+
+    fingertip_speed = np.vstack(list(hand_speeds.values()))
+    if np.max(fingertip_speed) > MAX_SPEED:
+        high_speed_mask = (fingertip_speed > MAX_SPEED).any(axis=0)
+        if trial_time[high_speed_mask][0] > (trial_time[-1] - MAX_SPEED_END_TIME):
+            last_time_ind = np.arange(high_speed_mask.size)[high_speed_mask][0]
+            trial_ind_mask = trial_time < trial_time[last_time_ind]
+            trial_time = trial_time[:last_time_ind]
+            trial_inds = trial_inds[trial_ind_mask]
+
+    return trial_time, trial_inds
 
 
 def get_tap_times(trial_dict: dict[str, Any], jatos_t0: float) -> tuple[np.ndarray, np.ndarray]:
@@ -597,17 +644,48 @@ def get_tap_times(trial_dict: dict[str, Any], jatos_t0: float) -> tuple[np.ndarr
     return tap_times_on, tap_times_off
 
 
-def get_dot_positions(trial_dict: dict[str, Any], tap_times: np.ndarray, change_time: float) -> np.ndarray:
+def get_tap_positions(trial_dict: dict[str, Any], x_pixels_max: int, y_pixels_max: int) -> np.ndarray:
+    """Returns the positions of the six screen taps.
+
+    The tap coordinate frame of reference is in the corner of the phone screen, rather than the center
+    like the other coordinates. Therefore, the coordinates must be shifted to account for this. The
+    positions are then normalized to a fraction of the largest screen dimension.
+
+    Parameters
+        trial_dict (dict[str, Any]): jatos JSON trial data
+        x_pixels_max (int): half the screen width in pixels (x-direction)
+        y_pixels_max (int): half the screen height in pixels (y-direction)
+
+    Returns
+        (np.ndarray): normalized positions where the participant taps the screen
+    """
+
+    # Calculate the pixel offsets for the center of the screen
+    x_centered = np.array(trial_dict["touchX"]) - (x_pixels_max / 2)
+    y_centered = np.array(trial_dict["touchY"]) - (y_pixels_max / 2)
+    pixel_range = max(x_pixels_max, y_pixels_max)
+
+    return np.stack((x_centered / pixel_range, y_centered / pixel_range))
+
+
+def get_dot_positions(
+        trial_dict: dict[str, Any],
+        tap_times: np.ndarray,
+        change_time: float,
+        pixel_range: int,
+) -> np.ndarray:
     """Returns the true dot positions before and after the change onset.
 
     In the jatos data, there are two sets of dot positions (before and after change onset). However,
     there is only one set of true positions, since the dots that are tapped before the change onset
-    disappear. This combines the two sets of positions into a single set of "true" positions.
+    disappear. This combines the two sets of positions into a single set of "true" positions. The
+    positions are then normalized to a fraction of the largest screen dimension.
 
     Parameters
         trial_dict (dict[str, Any]): jatos JSON trial data
         tap_times (np.ndarray): times at which the 6 screen taps occur
         change_time (float): time at which the change onset occurs
+        pixel_range (int): half the largest screen dimension in pixels
 
     Returns
         dot_positions (np.ndarray): true positions of the dots before and after the change onset
@@ -617,28 +695,10 @@ def get_dot_positions(trial_dict: dict[str, Any], tap_times: np.ndarray, change_
     dot_positions = np.stack((trial_dict["position_x"], trial_dict["position_y"]))
     dot_pos_shifted = np.stack((trial_dict["shifted_position_x"], trial_dict["shifted_position_y"]))
     dot_positions[:, shift_mask] = dot_pos_shifted[:, shift_mask]
+    dot_positions[0, :] /= pixel_range
+    dot_positions[1, :] /= pixel_range
 
     return dot_positions
-
-
-def get_tap_positions(trial_dict: dict[str, Any]) -> np.ndarray:
-    """Returns the positions of the six screen taps.
-
-    The tap coordinate frame of reference is in the corner of the phone screen, rather than the center
-    like the other coordinates. Therefore, the coordinates must be shifted to account for this.
-
-    Parameters
-        trial_dict (dict[str, Any]): jatos JSON trial data
-
-    Returns
-        (np.ndarray): positions where the participant taps the screen
-    """
-
-    # Calculate the pixel offsets for the center of the screen
-    x_center = trial_dict["windowWidth"] / 2
-    y_center = trial_dict["windowHeight"] / 2
-
-    return np.stack((np.array(trial_dict["touchX"]) - x_center, np.array(trial_dict["touchY"]) - y_center))
 
 
 def is_trial_usable(
@@ -646,41 +706,51 @@ def is_trial_usable(
         trial_inds: np.ndarray,
         block_time: np.ndarray,
         apriltag_ref_pos: dict[int, np.ndarray],
+        unusable_counts: dict[str, int],
 ) -> None:
     """Determines whether the trial is usable.
 
-    There are three situations where the trial is unuasable:
+    There are five situations where the trial is unuasable:
       1. The event onset occurs after the last tap
       2. The video data ends before the last trial ends
       3. The hand speeds are beyond a reasonably physical limit
       4. There are an unacceptable number of missed detections of the reference AprilTags
 
     The event onset occurs after the last tap when the participat moves extremely quickly. This is
-    an infrequent occurrence. On the other hand, missed AprilTag detections and probblems with hand
-    tracking and speed calculations are much more common. Therefore, most unusable trials are due to
-    these occurrences.
+    an infrequent occurrence. Similarly, the video data cutting short a trial can only occur during
+    the last trial of a block, and is therefore not common either. On the other hand, missed AprilTag
+    detections and probblems with hand tracking and speed calculations are much more common. Therefore,
+    most unusable trials are due to these occurrences.
+
+    Since this function returns early once one of the above conditions is met, the counts are not
+    exact. A single trial could meet more than one condition. These values are just used to understand
+    the approximate frequency of each type of error.
 
     Parameters
         trial_data (TrialData): class containing the individual trail data
         trial_inds (np.ndarray): indices in the block time vector associated with the trial
         block_time (np.ndarray): time vector for the entire block
         ref_pos_block (dict[int, np.ndarray]): coordinates of the reference AprilTags
+        unusable_counts (dict[str, int]): counts for each type of unusable trial
     """
 
     # If the event onset occurs after the last tap, the trial cannot be used
     if trial_data.change_time > trial_data.end_time:
         trial_data.trial_usable = False
+        unusable_counts["Onset After Last Tap"] += 1
         return None
 
     # If the video data ends before the trial ends, the trial cannot be used
     if block_time[-1] < trial_data.end_time:
         trial_data.trial_usable = False
+        unusable_counts["Incomplete Trial"] += 1
         return None
 
     # If the hand speed is unreasonably high, there was likely a problem during the tracking or spline fitting
     for speed_arr in trial_data.hand_speeds.values():
         if np.max(speed_arr) > MAX_SPEED:
             trial_data.trial_usable = False
+            unusable_counts["Non-physical Speed"] += 1
             return None
 
     # If there are an unacceptable number of consecutive missed detections of the reference AprilTags
@@ -688,7 +758,8 @@ def is_trial_usable(
         tag_zero_runs = find_zero_runs(reference_tag_pos[0, trial_inds])
         if tag_zero_runs.size > 0:
             trial_data.trial_usable = False
-            break
+            unusable_counts["AprilTags Undetected"] += 1
+            return None
 
 
 def find_zero_runs(data: np.ndarray) -> np.ndarray:
@@ -738,11 +809,13 @@ def load_session_trials(participant_id: str, session_id: str) -> list[list[Trial
         return None
 
 
-def main(plot_onsets: bool) -> None:
+def main(unusable_counts: dict[str, int], plot_onsets: bool, overwrite_data: bool) -> None:
     """Parses and extracts the required data from a jatos JSON file.
 
     Parameters
+        unusable_counts (dict[str, int]): counts for each type of unusable trial
         plot_onsets (bool): if True, plot a visual comparison of the jatos and diode change onset times
+        overwrite_data (bool): if True, overwrite the current data
     """
 
     jatos_paths, jatos_files = get_files_containing("../data/original_data", "jatos")
@@ -750,9 +823,46 @@ def main(plot_onsets: bool) -> None:
         # Get the participant and session IDs
         participant_id, session_id = jatos_path.split("/")[-2:]
 
+        # Define the file name
+        filename = f"../data/pipeline_data/{participant_id}/{session_id}/{participant_id}_{session_id}_trial_data.pkl"
+
         # Define the file path to the jatos data
-        get_session_trials(participant_id, session_id, os.path.join(jatos_path, jatos_file), plot_onsets)
+        session_trials = get_session_trials(
+                            participant_id,
+                            session_id,
+                            os.path.join(jatos_path, jatos_file),
+                            unusable_counts,
+                            plot_onsets
+                        )
+
+        if overwrite_data:
+            # Save the transformed hand data
+            with open(filename, "wb") as f:
+                pickle.dump(session_trials, f)
+
+    print("\nUnusable trial counts")
+    for unusable_type, count in unusable_counts.items():
+        print(f"Reason: '{unusable_type}', Count: {count}")
 
 
 if __name__ == "__main__":
-    main(False)
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-o", "--overwrite",
+        action="store_true",
+        help="If True, overwrite the existing data"
+    )
+    parser.add_argument(
+        "-p", "--plot_onsets",
+        action="store_true",
+        help="If True, plot the onset alignment for each trial"
+    )
+    args = parser.parse_args()
+
+    unusable_trial_counts = {
+        "Onset After Last Tap": 0,
+        "Incomplete Trial": 0,
+        "Non-physical Speed": 0,
+        "AprilTags Undetected": 0,
+    }
+    main(unusable_trial_counts, args.plot_onsets, args.overwrite)
