@@ -29,6 +29,3 @@ class PostprocessingConfig:
     smoothing_factor: float = 3000
     missing_blocks: list[int] = field(default_factory=list)
     skip_blocks: list[int] = field(default_factory=list)
-    skip_last_trial: list[bool] = field(default_factory=list)
-
-
