@@ -19,6 +19,11 @@ MAX_ZERO_DT = 6
 MAX_SPEED = 500
 
 
+# TODO:
+#  - Add overwrite parameter in argparse
+#  - Add docstring to module
+#  - Add plotting function
+#     -> Histogram of differences between diode onsets and each jatos onset type (flash on, flash off, change)
 @dataclass
 class TrialData:
     participant_id: str
@@ -39,7 +44,7 @@ class TrialData:
     trial_usable: bool = True
 
 
-def get_trial_data(
+def get_session_trials(
         participant_id: str,
         session_id: str,
         jatos_fpath: str,
@@ -487,12 +492,13 @@ def populate_trial_dataclass(
 
     # # Plot the trial
     # fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-    # trial_onset_time = trial_data.trial_tap_times[0] + trial_data.trial_onset_dt
-    # aligned_time = trial_data.trial_time - trial_onset_time
-    # plot_speed = trial_data.trial_hand_speed[8][-1, :]
+    # aligned_time = trial_data.time_vec - trial_data.change_time
+    # plot_speed = trial_data.hand_speeds[8][-1, :]
     # ax.plot(aligned_time, plot_speed)
     # ax.vlines(0, np.min(plot_speed), np.max(plot_speed), 'r')
+    # ax.set_title(f"{trial_data.participant_id}-{trial_data.session_id}, Block {trial_data.block_id}")
     # plt.show()
+    # plt.close()
 
     return trial_data
 
@@ -745,7 +751,7 @@ def main(plot_onsets: bool) -> None:
         participant_id, session_id = jatos_path.split("/")[-2:]
 
         # Define the file path to the jatos data
-        get_trial_data(participant_id, session_id, os.path.join(jatos_path, jatos_file), plot_onsets)
+        get_session_trials(participant_id, session_id, os.path.join(jatos_path, jatos_file), plot_onsets)
 
 
 if __name__ == "__main__":
