@@ -31,7 +31,7 @@ MIN_SET_LEN = 8.65
 MAX_SET_LEN = 9.4
 
 # Hand tracking constants
-INDEX_FINGER_TIP_IDX = 8
+INDEX_FINGER_TIP_ID = 8
 HAND_LANDMARK_CONNECTIONS = mp.hands.HAND_CONNECTIONS
 
 
@@ -550,7 +550,7 @@ class VideoProcessingPipeline:
             # Track the hand that is highest on the screen (lowest y-value)
             lowest_y = 2 * self.pixel_height
             for ind, hand_lm in enumerate(tracking_results.multi_hand_landmarks):
-                y_index_tip = hand_lm.landmark[INDEX_FINGER_TIP_IDX].y * self.pixel_height
+                y_index_tip = hand_lm.landmark[INDEX_FINGER_TIP_ID].y * self.pixel_height
                 if y_index_tip < lowest_y:
                     self.hand_ind = ind
                 lowest_y = y_index_tip
@@ -594,7 +594,7 @@ class VideoProcessingPipeline:
         if block_vars.event_ind < block_vars.event_onsets.size:
             if block_vars.time[block_vars.frame_cnt] > block_vars.event_onsets[block_vars.event_ind]:
                 try:
-                    finger_tip_pos = tracking_results.multi_hand_landmarks[self.hand_ind].landmark[INDEX_FINGER_TIP_IDX]
+                    finger_tip_pos = tracking_results.multi_hand_landmarks[self.hand_ind].landmark[INDEX_FINGER_TIP_ID]
                     cx = finger_tip_pos.x * self.pixel_width
                     cy = finger_tip_pos.y * self.pixel_height
                 except TypeError:
