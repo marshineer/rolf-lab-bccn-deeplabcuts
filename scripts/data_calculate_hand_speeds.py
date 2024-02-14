@@ -29,9 +29,9 @@ import matplotlib.pyplot as plt
 from scipy.interpolate import splrep, BSpline
 
 sys.path.insert(0, os.path.abspath(".."))
-from utils.calculations import MIN_POSITION, get_basis_vectors, calculate_time_derivative, distance_2d
+from utils.calculations import MIN_POSITION, get_basis_vectors, calculate_time_derivative
 from utils.data_loading import load_pipeline_config, get_files_containing, load_block_video_mp4
-from utils.pipeline import SessionData, load_session_data, INDEX_FINGER_TIP_IDX
+from utils.pipeline import SessionData, load_session_data, INDEX_FINGER_TIP_ID
 
 
 DT_SPEED = 0.001
@@ -39,6 +39,7 @@ SMOOTHING = 4500
 BASIS_RATIO = 1 / 0.94
 
 
+# TODO: Refactor transform_hand_positions function (put plotting in its own module)
 class TransformedHandData:
     """This class stores the transformed hand landmark data.
 
@@ -109,14 +110,12 @@ class TransformedHandData:
             # Determine which AprilTag is the best reference
             reference_tag_id = session_data.apparatus_tag_ids[0]
 
-            # TODO: Refactor this function
             # Plot the frame with the transformed vectors (for visual check)
             if plot_vectors:
                 # Define the position of the index fingertip
-                tip_pos = session_data.hand_landmark_pos_abs[block][INDEX_FINGER_TIP_IDX]
+                tip_pos = session_data.hand_landmark_pos_abs[block][INDEX_FINGER_TIP_ID]
                 tip_pos_trans = np.zeros_like(tip_pos)
-                # tip_pos_rel = tip_pos - ref_pos[reference_tag_id]
-                tip_pos_rel = tip_pos
+                tip_pos_rel = tip_pos - ref_pos[reference_tag_id]
 
                 # Initialize the transformed reference positions
                 ref_pos_trans = {tag: np.zeros_like(tip_pos) for tag in session_data.apparatus_tag_ids}
@@ -130,12 +129,13 @@ class TransformedHandData:
                 i = 0
                 while vcap.isOpened():
                     ret, frame = vcap.read()
-                    if i >= ind0:
+                    if i >= ind0 and time_vec[i] > 21:
                         print(f"\nFrame {i + 1}, Block time: {time_vec[i]:0.3f}")
                         fig, ax = plt.subplots(1, 1, figsize=(10, 6))
                         ax.set_xlim([-1, width])
                         ax.set_ylim([height, -1])
-                        ax.imshow(frame)
+                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        ax.imshow(frame_rgb)
 
                         # Calculate the transformation matrix for each frame
                         basis_v1, basis_v2 = get_basis_vectors(ref_pos, i, session_data.apparatus_tag_ids)
@@ -160,26 +160,49 @@ class TransformedHandData:
                         print(f"Reference vector length ratio before and after scaling: "
                               f"{v2_norm / v1_norm:0.2f} and {v2_norm_trans /  v1_norm_trans:0.2f} respectively")
 
-                        ax.plot([ref_pos[origin_id][0, i], ref_pos[v1_id][0, i]],
-                                [ref_pos[origin_id][1, i], ref_pos[v1_id][1, i]], 'r')
-                        ax.plot([ref_pos[origin_id][0, i], ref_pos[v2_id][0, i]],
-                                [ref_pos[origin_id][1, i], ref_pos[v2_id][1, i]], 'r')
-                        ax.plot([ref_pos[origin_id][0, i], tip_pos[0, i]],
-                                [ref_pos[origin_id][1, i], tip_pos[1, i]], 'r')
+                        # Reference frame and true fingertip vector
+                        origin_x, origin_y = ref_pos[origin_id][:, i]
+                        ax.plot([origin_x, ref_pos[v1_id][0, i]], [origin_y, ref_pos[v1_id][1, i]], "crimson", lw=2.5)
+                        ax.plot([origin_x, ref_pos[v2_id][0, i]], [origin_y, ref_pos[v2_id][1, i]], "crimson", lw=2.5,
+                                label="Reference Frame")
+                        ax.plot([origin_x, tip_pos[0, i]], [origin_y, tip_pos[1, i]], "crimson", ls="--", lw=2.5,
+                                label="Fingertip Position (Reference Frame)")
+
+                        # # Transformed frame and fingertip vector, translated to image origin
                         # ax.plot([0, ref_pos_trans[v1_id][0, i] - ref_pos_trans[origin_id][0, i]],
-                        #         [0, ref_pos_trans[v1_id][1, i] - ref_pos_trans[origin_id][1, i]], 'b')
+                        #         [0, ref_pos_trans[v1_id][1, i] - ref_pos_trans[origin_id][1, i]],
+                        #         "dodgerblue", lw=2.5)
                         # ax.plot([0, ref_pos_trans[v2_id][0, i] - ref_pos_trans[origin_id][0, i]],
-                        #         [0, ref_pos_trans[v2_id][1, i] - ref_pos_trans[origin_id][1, i]], 'b')
+                        #         [0, ref_pos_trans[v2_id][1, i] - ref_pos_trans[origin_id][1, i]],
+                        #         "dodgerblue", lw=2.5, label="Transformed Frame")
                         # ax.plot([0, tip_pos[0, i] - ref_pos[origin_id][0, i]],
-                        #         [0, tip_pos[1, i] - ref_pos[origin_id][1, i]], 'g--')
-                        # ax.plot([0, tip_pos_trans[0, i]], [0, tip_pos_trans[1, i]], 'g')
-                        ax.plot([ref_pos_trans[origin_id][0, i], ref_pos_trans[v1_id][0, i]],
-                                [ref_pos_trans[origin_id][1, i], ref_pos_trans[v1_id][1, i]], 'b')
-                        ax.plot([ref_pos_trans[origin_id][0, i], ref_pos_trans[v2_id][0, i]],
-                                [ref_pos_trans[origin_id][1, i], ref_pos_trans[v2_id][1, i]], 'b')
-                        ax.plot([ref_pos_trans[origin_id][0, i], tip_pos_trans[0, i]],
-                                [ref_pos_trans[origin_id][1, i], tip_pos_trans[1, i]], 'g')
+                        #         [0, tip_pos[1, i] - ref_pos[origin_id][1, i]], "r--", lw=2.5)
+                        # ax.plot([0, tip_pos_trans[0, i]], [0, tip_pos_trans[1, i]],
+                        #         "dodgerblue", ls="--", lw=2.5, label="Fingertip Position (Transformed Frame)")
+
+                        # Transformed frame and fingertip vector, translated to origin of reference frame
+                        ax.plot([origin_x, ref_pos_trans[v1_id][0, i] - ref_pos_trans[origin_id][0, i] + origin_x],
+                                [origin_y, ref_pos_trans[v1_id][1, i] - ref_pos_trans[origin_id][1, i] + origin_y],
+                                "dodgerblue", lw=2.5)
+                        ax.plot([origin_x, ref_pos_trans[v2_id][0, i] - ref_pos_trans[origin_id][0, i] + origin_x],
+                                [origin_y, ref_pos_trans[v2_id][1, i] - ref_pos_trans[origin_id][1, i] + origin_y],
+                                "dodgerblue", lw=2.5, label="Transformed Frame")
+                        # ax.plot([0, tip_pos[0, i] - ref_pos[origin_id][0, i]],
+                        #         [0, tip_pos[1, i] - ref_pos[origin_id][1, i]], "g--", lw=3)
+                        ax.plot([origin_x, tip_pos_trans[0, i] + origin_x],
+                                [origin_y, tip_pos_trans[1, i] + origin_y],
+                                "dodgerblue", lw=2.5, ls="--", label="Fingertip Position (Transformed Frame)")
+
+                        ax.axis("off")
+                        ax.set_title(f"{session_data.participant_id}-{session_data.session_id}-Block {block}, "
+                                     f"Video Time: {time_vec[i]:0.2f}s (Video Frame {i + 1})", fontsize=19)
+                        ax.legend(loc=0, framealpha=0.9)
                         plt.show()
+                        # fig.savefig(
+                        #     f"../images/plots/{session_data.participant_id}-{session_data.session_id}-Block{block}-"
+                        #     f"Frame{i}_hand_position_transformation.png", dpi=fig.dpi, bbox_inches="tight"
+                        # )
+
                     i += 1
 
             else:
@@ -406,6 +429,8 @@ def main(plot_landmarks: list[int], plot_vectors: bool, overwrite_data: bool):
 
     Parameters
         plot_landmarks (dict[str, int]): names (keys) and IDs (values) of the hand landmarks to plot, if any
+        plot_vectors (bool): if True, plot the transformed vectors for each video frame
+        overwrite_data (bool): if True, overwrite the current data
     """
 
     # Load a list of all the pipeline data files
@@ -430,9 +455,7 @@ def main(plot_landmarks: list[int], plot_vectors: bool, overwrite_data: bool):
         # Skip data that has already been transformed
         participant_id, session_id = fpath.split("/")[-2:]
         fname = f"{participant_id}_{session_id}_transformed_hand_data.pkl"
-        if "backup" in fpath:
-            continue
-        if not overwrite_data and os.path.exists(os.path.join(fpath, fname)):
+        if not overwrite_data and not plot_vectors and os.path.exists(os.path.join(fpath, fname)):
             print(f"{fname} already exists")
             continue
 
@@ -446,9 +469,10 @@ def main(plot_landmarks: list[int], plot_vectors: bool, overwrite_data: bool):
         # Calculate the speed of each landmark from the position data
         hand_data.calculate_hand_speeds(session_data)
 
-        # Save the transformed hand data
-        with open(os.path.join(fpath, fname), "wb") as f:
-            pickle.dump(hand_data, f)
+        if overwrite_data:
+            # Save the transformed hand data
+            with open(os.path.join(fpath, fname), "wb") as f:
+                pickle.dump(hand_data, f)
 
 
 if __name__ == "__main__":
@@ -464,7 +488,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "-p", "--plot_vectors",
-        action="store_false",
+        action="store_true",
         help="If True, plot the transformed vectors for each video frame"
     )
     parser.add_argument(
