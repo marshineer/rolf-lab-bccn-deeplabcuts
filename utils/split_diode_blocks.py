@@ -116,7 +116,7 @@ def get_block_data(
                 block_end_ind = None
             else:
                 block_end_ind = np.where(block_time > block_end_time)[0][0]
-        if block_end_ind is not None:  # TODO: check to ensure this handles all cases
+        if block_end_ind is not None:
             valid_blocks.append(block.iloc[:block_end_ind, :])
         else:
             valid_blocks.append(block)
@@ -124,12 +124,12 @@ def get_block_data(
 
         # As a visual check
         if show_plots:
-            fig, ax = plt.subplots(1, 1, figsize=(16, 5))
+            fig, ax = plt.subplots(1, 1, figsize=(10, 5))
             ax.plot(block_time, block_light_values, label="Diode Data")
             ax.vlines(block_time[block_crossings], 0, diode_threshold, colors='r', linewidths=3)
             ax.vlines(event_onset_times[-1], 0, diode_threshold // 2, colors='g', linewidths=3, label="Event Onsets")
             ax.plot(valid_blocks[-1].time, valid_blocks[-1].light_value, label="Diode Data Block")
-            ax.set_xlabel("Block Time", fontsize=16)
+            ax.set_xlabel("Block Time [seconds]", fontsize=16)
             ax.set_ylabel("Diode Brightness", fontsize=16)
             ax.set_title(f"Block {i}", fontsize=24)
             ax.legend(loc=2)

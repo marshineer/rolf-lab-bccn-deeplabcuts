@@ -9,7 +9,6 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, os.path.abspath(".."))
 from utils.split_diode_blocks import get_block_data
 from utils.data_loading import get_files_containing, load_diode_data, load_session_config
-# from utils_pipeline import SessionConfig
 
 
 def plot_diode_data(participant_id: str = None, session_id: str = None) -> None:
@@ -27,9 +26,9 @@ def plot_diode_data(participant_id: str = None, session_id: str = None) -> None:
             plt.close()
     else:
         diode_df = load_diode_data(participant_id, session_id)
-        fig1, ax1 = plt.subplots(1, 1, figsize=(16, 6))
+        fig1, ax1 = plt.subplots(1, 1, figsize=(10, 6))
         ax1.plot(diode_df.time, diode_df.light_value)
-        ax1.set_xlabel("Time", fontsize=16)
+        ax1.set_xlabel("Session Time [seconds]", fontsize=16)
         ax1.set_ylabel("Diode Brightness", fontsize=16)
         ax1.set_title(f"Participant {participant_id}, Session {session_id}", fontsize=24)
         plt.show()
