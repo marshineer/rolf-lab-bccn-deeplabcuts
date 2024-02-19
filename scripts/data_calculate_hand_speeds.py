@@ -20,7 +20,6 @@ reference positions are simply interpolated using the frame before and after the
 
 import os
 import sys
-import cv2
 import pickle
 import pathlib
 import argparse
@@ -30,8 +29,8 @@ from scipy.interpolate import splrep, BSpline
 
 sys.path.insert(0, os.path.abspath(".."))
 from utils.calculations import MIN_POSITION, get_basis_vectors, calculate_time_derivative
-from utils.data_loading import load_pipeline_config, get_files_containing, load_block_video_mp4
-from utils.pipeline import SessionData, load_session_data, INDEX_FINGER_TIP_ID
+from utils.data_loading import load_pipeline_config, get_files_containing
+from utils.pipeline import SessionData, load_session_data
 
 
 DT_SPEED = 0.001
@@ -39,7 +38,6 @@ SMOOTHING = 4500
 BASIS_RATIO = 1 / 0.94
 
 
-# TODO: Refactor transform_hand_positions function (put plotting in its own module)
 class TransformedHandData:
     """This class stores the transformed hand landmark data.
 
@@ -74,7 +72,6 @@ class TransformedHandData:
             session_data: SessionData,
             reference_scale_matrix: np.ndarray,
             plot_landmarks: list[int] = None,
-            plot_vectors: bool = False,
     ) -> None:
         """Calculates hand positions relative to a reference point.
 
@@ -110,151 +107,55 @@ class TransformedHandData:
             # Determine which AprilTag is the best reference
             reference_tag_id = session_data.apparatus_tag_ids[0]
 
-            # Plot the frame with the transformed vectors (for visual check)
-            if plot_vectors:
-                # Define the position of the index fingertip
-                tip_pos = session_data.hand_landmark_pos_abs[block][INDEX_FINGER_TIP_ID]
-                tip_pos_trans = np.zeros_like(tip_pos)
-                tip_pos_rel = tip_pos - ref_pos[reference_tag_id]
+            # Interpolate the missing reference AprilTag positions
+            interp_ref_pos = {}
+            for tag_id in session_data.apparatus_tag_ids:
+                interp_ref_pos[tag_id] = interpolate_pos(time_vec, ref_pos[tag_id])[:, ind0:]
 
-                # Initialize the transformed reference positions
-                ref_pos_trans = {tag: np.zeros_like(tip_pos) for tag in session_data.apparatus_tag_ids}
-                origin_id, v2_id, v1_id = session_data.apparatus_tag_ids
+            # Interpolate the hand landmark coordinates and translate them to the origin of the reference frame
+            transformed_lm_pos = {}
+            for lbl, lm in session_data.tracked_landmarks.items():
+                lm_xy = interpolate_pos(time_vec, lm_pos[lm])[:, ind0:]
+                transformed_lm_pos[lm] = lm_xy - interp_ref_pos[reference_tag_id]
 
-                # Load the block video
-                vcap = load_block_video_mp4(session_data.participant_id, session_data.session_id, block)
-                width = int(vcap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                height = int(vcap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            # Rotate the frame to be square to the apparatus' AprilTags
+            position_shape = interp_ref_pos[reference_tag_id].shape
+            # transformed_lm_pos = {lm: np.zeros(position_shape) for lm in session_data.tracked_landmarks.values()}
+            rotated_ref_pos = {tag: np.zeros(position_shape) for tag in session_data.apparatus_tag_ids}
 
-                i = 0
-                while vcap.isOpened():
-                    ret, frame = vcap.read()
-                    if i >= ind0 and time_vec[i] > 21:
-                        print(f"\nFrame {i + 1}, Block time: {time_vec[i]:0.3f}")
-                        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-                        ax.set_xlim([-1, width])
-                        ax.set_ylim([height, -1])
-                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        ax.imshow(frame_rgb)
+            for i in range(position_shape[1]):
+                # Calculate the transformation matrix for each frame
+                transformation_matrix = get_transformation_matrix(
+                    interp_ref_pos,
+                    i,
+                    session_data.apparatus_tag_ids,
+                    reference_scale_matrix,
+                )
 
-                        # Calculate the transformation matrix for each frame
-                        basis_v1, basis_v2 = get_basis_vectors(ref_pos, i, session_data.apparatus_tag_ids)
-                        rotation_matrix = np.stack((basis_v1, basis_v2)).T
-                        transformation_matrix = np.linalg.inv(rotation_matrix @ reference_scale_matrix)
-
-                        # Transform hand landmark (finger tip) and references
-                        tip_pos_trans[:, i] = transformation_matrix @ tip_pos_rel[:, i]
-                        print(f"Tip position (x, y) = ({tip_pos_rel[0, i]:0.3f}, {tip_pos_rel[1, i]:0.3f})")
-                        print(f"Tip position (x, y) = ({tip_pos_trans[0, i]:0.3f},"
-                              f" {tip_pos_trans[1, i]:0.3f}) (transformed)")
-                        for tag_id in session_data.apparatus_tag_ids:
-                            ref_pos_trans[tag_id][:, i] = transformation_matrix @ ref_pos[tag_id][:, i]
-                        v1_norm = np.linalg.norm(ref_pos[v1_id][:, i] - ref_pos[origin_id][:, i])
-                        v2_norm = np.linalg.norm(ref_pos[v2_id][:, i] - ref_pos[origin_id][:, i])
-                        v1_norm_trans = np.linalg.norm(ref_pos_trans[v1_id][:, i] - ref_pos_trans[origin_id][:, i])
-                        v2_norm_trans = np.linalg.norm(ref_pos_trans[v2_id][:, i] - ref_pos_trans[origin_id][:, i])
-                        print(f"Basis v1 norm {v1_norm:0.3f}")
-                        print(f"Basis v2 norm {v2_norm:0.3f}")
-                        print(f"Basis v1 scaled norm {v1_norm_trans:0.3f}")
-                        print(f"Basis v2 scaled norm {v2_norm_trans:0.3f}")
-                        print(f"Reference vector length ratio before and after scaling: "
-                              f"{v2_norm / v1_norm:0.2f} and {v2_norm_trans /  v1_norm_trans:0.2f} respectively")
-
-                        # Reference frame and true fingertip vector
-                        origin_x, origin_y = ref_pos[origin_id][:, i]
-                        ax.plot([origin_x, ref_pos[v1_id][0, i]], [origin_y, ref_pos[v1_id][1, i]], "crimson", lw=2.5)
-                        ax.plot([origin_x, ref_pos[v2_id][0, i]], [origin_y, ref_pos[v2_id][1, i]], "crimson", lw=2.5,
-                                label="Reference Frame")
-                        ax.plot([origin_x, tip_pos[0, i]], [origin_y, tip_pos[1, i]], "crimson", ls="--", lw=2.5,
-                                label="Fingertip Position (Reference Frame)")
-
-                        # # Transformed frame and fingertip vector, translated to image origin
-                        # ax.plot([0, ref_pos_trans[v1_id][0, i] - ref_pos_trans[origin_id][0, i]],
-                        #         [0, ref_pos_trans[v1_id][1, i] - ref_pos_trans[origin_id][1, i]],
-                        #         "dodgerblue", lw=2.5)
-                        # ax.plot([0, ref_pos_trans[v2_id][0, i] - ref_pos_trans[origin_id][0, i]],
-                        #         [0, ref_pos_trans[v2_id][1, i] - ref_pos_trans[origin_id][1, i]],
-                        #         "dodgerblue", lw=2.5, label="Transformed Frame")
-                        # ax.plot([0, tip_pos[0, i] - ref_pos[origin_id][0, i]],
-                        #         [0, tip_pos[1, i] - ref_pos[origin_id][1, i]], "r--", lw=2.5)
-                        # ax.plot([0, tip_pos_trans[0, i]], [0, tip_pos_trans[1, i]],
-                        #         "dodgerblue", ls="--", lw=2.5, label="Fingertip Position (Transformed Frame)")
-
-                        # Transformed frame and fingertip vector, translated to origin of reference frame
-                        ax.plot([origin_x, ref_pos_trans[v1_id][0, i] - ref_pos_trans[origin_id][0, i] + origin_x],
-                                [origin_y, ref_pos_trans[v1_id][1, i] - ref_pos_trans[origin_id][1, i] + origin_y],
-                                "dodgerblue", lw=2.5)
-                        ax.plot([origin_x, ref_pos_trans[v2_id][0, i] - ref_pos_trans[origin_id][0, i] + origin_x],
-                                [origin_y, ref_pos_trans[v2_id][1, i] - ref_pos_trans[origin_id][1, i] + origin_y],
-                                "dodgerblue", lw=2.5, label="Transformed Frame")
-                        # ax.plot([0, tip_pos[0, i] - ref_pos[origin_id][0, i]],
-                        #         [0, tip_pos[1, i] - ref_pos[origin_id][1, i]], "g--", lw=3)
-                        ax.plot([origin_x, tip_pos_trans[0, i] + origin_x],
-                                [origin_y, tip_pos_trans[1, i] + origin_y],
-                                "dodgerblue", lw=2.5, ls="--", label="Fingertip Position (Transformed Frame)")
-
-                        ax.axis("off")
-                        ax.set_title(f"{session_data.participant_id}-{session_data.session_id}-Block {block}, "
-                                     f"Video Time: {time_vec[i]:0.2f}s (Video Frame {i + 1})", fontsize=19)
-                        ax.legend(loc=0, framealpha=0.9)
-                        plt.show()
-                        # fig.savefig(
-                        #     f"../images/plots/{session_data.participant_id}-{session_data.session_id}-Block{block}-"
-                        #     f"Frame{i}_hand_position_transformation.png", dpi=fig.dpi, bbox_inches="tight"
-                        # )
-
-                    i += 1
-
-            else:
-                # Interpolate the missing reference AprilTag positions
-                interp_ref_pos = {}
-                for tag_id in session_data.apparatus_tag_ids:
-                    interp_ref_pos[tag_id] = interpolate_pos(time_vec, ref_pos[tag_id])[:, ind0:]
-
-                # Interpolate the hand landmark coordinates and translate them to the origin of the reference frame
-                transformed_lm_pos = {}
+                # Transform hand landmarks
                 for lbl, lm in session_data.tracked_landmarks.items():
-                    lm_xy = interpolate_pos(time_vec, lm_pos[lm])[:, ind0:]
-                    transformed_lm_pos[lm] = lm_xy - interp_ref_pos[reference_tag_id]
+                    # Transform the coordinates into the reference frame
+                    transformed_lm_pos[lm][:, i] = transformation_matrix @ transformed_lm_pos[lm][:, i]
 
-                # Rotate the frame to be square to the apparatus' AprilTags
-                position_shape = interp_ref_pos[reference_tag_id].shape
-                # transformed_lm_pos = {lm: np.zeros(position_shape) for lm in session_data.tracked_landmarks.values()}
-                rotated_ref_pos = {tag: np.zeros(position_shape) for tag in session_data.apparatus_tag_ids}
+                # Transform reference AprilTags
+                for tag_id in session_data.apparatus_tag_ids:
+                    rotated_ref_pos[tag_id][:, i] = transformation_matrix @ interp_ref_pos[tag_id][:, i]
 
-                for i in range(position_shape[1]):
-                    # Calculate the transformation matrix for each frame
-                    transformation_matrix = get_transformation_matrix(
-                        interp_ref_pos,
-                        i,
-                        session_data.apparatus_tag_ids,
-                        reference_scale_matrix,
-                    )
+            if plot_landmarks is not None:
+                landmark_names_ids = {name: lm for name, lm in self.hand_landmarks.items() if lm in plot_landmarks}
+                fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+                for landmark_name, landmark_id in landmark_names_ids.items():
+                    ax.plot(time_vec[ind0:], transformed_lm_pos[landmark_id][0, :], label=f"X: {landmark_name}")
+                    ax.plot(time_vec[ind0:], transformed_lm_pos[landmark_id][1, :], label=f"Y: {landmark_name}")
+                ax.set_title(f"{self.participant_id}-{self.session_id}, Block {block}")
+                ax.legend()
+                plt.show()
+                plt.close()
+            print(f"{self.participant_id}-{self.session_id}, Block {block}")
 
-                    # Transform hand landmarks
-                    for lbl, lm in session_data.tracked_landmarks.items():
-                        # Transform the coordinates into the reference frame
-                        transformed_lm_pos[lm][:, i] = transformation_matrix @ transformed_lm_pos[lm][:, i]
-
-                    # Transform reference AprilTags
-                    for tag_id in session_data.apparatus_tag_ids:
-                        rotated_ref_pos[tag_id][:, i] = transformation_matrix @ interp_ref_pos[tag_id][:, i]
-
-                if plot_landmarks is not None:
-                    landmark_names_ids = {name: lm for name, lm in self.hand_landmarks.items() if lm in plot_landmarks}
-                    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-                    for landmark_name, landmark_id in landmark_names_ids.items():
-                        ax.plot(time_vec[ind0:], transformed_lm_pos[landmark_id][0, :], label=f"X: {landmark_name}")
-                        ax.plot(time_vec[ind0:], transformed_lm_pos[landmark_id][1, :], label=f"Y: {landmark_name}")
-                    ax.set_title(f"{self.participant_id}-{self.session_id}, Block {block}")
-                    ax.legend()
-                    plt.show()
-                    plt.close()
-                print(f"{self.participant_id}-{self.session_id}, Block {block}")
-
-                self.time_video.append(time_vec[ind0:])
-                self.hand_position.append(transformed_lm_pos)
-                self.ref_position.append(rotated_ref_pos)
+            self.time_video.append(time_vec[ind0:])
+            self.hand_position.append(transformed_lm_pos)
+            self.ref_position.append(rotated_ref_pos)
 
     def calculate_hand_speeds(self, session_data: SessionData) -> None:
         """Calculates the speed of each hand landmark.
@@ -422,7 +323,7 @@ def load_transformed_hand(participant_id: str, session_id: str) -> TransformedHa
         return None
 
 
-def main(plot_landmarks: list[int], plot_vectors: bool, overwrite_data: bool):
+def main(plot_landmarks: list[int], overwrite_data: bool):
     """Script that transforms the hand postions to a consistent frame of reference.
 
     The frame of reference used is the AprilTags set on the corners of the experimental apparatus.
@@ -455,7 +356,7 @@ def main(plot_landmarks: list[int], plot_vectors: bool, overwrite_data: bool):
         # Skip data that has already been transformed
         participant_id, session_id = fpath.split("/")[-2:]
         fname = f"{participant_id}_{session_id}_transformed_hand_data.pkl"
-        if not overwrite_data and not plot_vectors and os.path.exists(os.path.join(fpath, fname)):
+        if not overwrite_data and os.path.exists(os.path.join(fpath, fname)):
             print(f"{fname} already exists")
             continue
 
@@ -464,15 +365,14 @@ def main(plot_landmarks: list[int], plot_vectors: bool, overwrite_data: bool):
 
         # Calculate the hand positions relative to the apparatus frame
         hand_data = TransformedHandData(session_data)
-        hand_data.transform_hand_positions(session_data, scale_matrix, plot_landmarks, plot_vectors)
+        hand_data.transform_hand_positions(session_data, scale_matrix, plot_landmarks)
 
         # Calculate the speed of each landmark from the position data
         hand_data.calculate_hand_speeds(session_data)
 
-        if overwrite_data:
-            # Save the transformed hand data
-            with open(os.path.join(fpath, fname), "wb") as f:
-                pickle.dump(hand_data, f)
+        # Save the transformed hand data
+        with open(os.path.join(fpath, fname), "wb") as f:
+            pickle.dump(hand_data, f)
 
 
 if __name__ == "__main__":
@@ -487,11 +387,6 @@ if __name__ == "__main__":
         help="If True, overwrite the existing data"
     )
     parser.add_argument(
-        "-p", "--plot_vectors",
-        action="store_true",
-        help="If True, plot the transformed vectors for each video frame"
-    )
-    parser.add_argument(
         "-lm", "--landmark_ids",
         type=int,
         nargs="*",
@@ -500,4 +395,4 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    main(args.landmark_ids, args.plot_vectors, args.overwrite)
+    main(args.landmark_ids, args.overwrite)
