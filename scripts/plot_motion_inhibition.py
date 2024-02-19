@@ -13,37 +13,23 @@ from scripts.data_group_trials_by_type import load_grouped_trials
 
 # TODO:
 #  - Refactor the module
-
-# TODO (DONE):
-#  - Add tap accuracy to the fraction plot
-#  - Group within participants first, then average across participants
-#     -> Std within a participant is noise
-#     -> Std across participants may represent difference in behaviour
-#  - Calculate confidence intervals across participants
-#  - Look at noise differences within participants
-#  - Align speed data for each trial to the event onset time
-#  - Generate an array of the trials that have the same time period before and after onset
-#     -> Use the range [-0.1, 0.45]s
-#  - Add the rest of the trials in a list of arrays
-#  - Calculate summary statistics for the array (mean, std)
-#  - Plot the curves, separated by experiment type and condition
-#     -> Include the trials that don't cover the full period as strays
 TIME_PRE_ONSET = -0.1
 TIME_POST_ONSET = 0.4
 plot_time = np.arange(TIME_PRE_ONSET, TIME_POST_ONSET, DT_SPEED)
 experiment_labels = {
-    "Experiments": ["Experiment A", "Experiment B"],
+    "Experiments": ["Experiment 2", "Experiment 1"],
     "Conditions": ["Shift and Flash", "Shift Only", "Flash Only", "No Change"],
 }
-colours = ["firebrick", "dodgerblue"]
+# colours = ["dodgerblue", "firebrick"]
+colours = ["darkturquoise", "firebrick"]
 
 
 def set_plot_colour_linestyle(experiment, change_type):
     # Set the plot colour
-    if experiment == "Experiment A":
-        colour = colours[0]
-    elif experiment == "Experiment B":
+    if experiment == "Experiment 2":
         colour = colours[1]
+    elif experiment == "Experiment 1":
+        colour = colours[0]
 
     # Set the plot line style
     if change_type == "Shift and Flash":
@@ -194,27 +180,28 @@ if __name__ == "__main__":
         # plt.close()
 
     # Plot the distribution of pre- and post-onset durations
-    fig1, ax1 = plt.subplots(1, 2, figsize=(14, 5), sharey="row")
-    bins = np.arange(-0.1, 2, 0.05)
-    hist_vals, bins = np.histogram(np.hstack(pre_onset_dt_hist), bins=bins)
-    vline_height = np.max(hist_vals) * 1.1
+    fig1, ax1 = plt.subplots(1, 2, figsize=(12, 5), sharey="row")
     # Pre-onset
+    bins_pre = np.arange(-0.1, 1.31, 0.05)
+    hist_vals, _ = np.histogram(np.hstack(pre_onset_dt_hist), bins=bins_pre)
+    vline_height = np.max(hist_vals) * 1.1
     pre_onset_dts = np.hstack(pre_onset_dt_hist)
     window_mask = pre_onset_dts >= -TIME_PRE_ONSET
-    ax1[0].hist(pre_onset_dts[window_mask], bins=bins, color=colours[0], edgecolor=colours[0],
+    ax1[0].hist(pre_onset_dts[window_mask], bins=bins_pre, color=colours[1], edgecolor=colours[1],
                 histtype="stepfilled", alpha=0.4, label="Trials Used")
-    ax1[0].hist(pre_onset_dts[~window_mask], bins=bins, edgecolor=colours[0], histtype="step", hatch="/",
+    ax1[0].hist(pre_onset_dts[~window_mask], bins=bins_pre, edgecolor=colours[1], histtype="step", hatch="/",
                 label="Trials Not Used")
     ax1[0].vlines(-TIME_PRE_ONSET, 0, vline_height, "k", linestyles="--", label=f"Pre-Onset Window Length")
     ax1[0].set_xlabel("Time Between Change Onset and Beginning of Trial [seconds]", fontsize=13)
     ax1[0].set_ylabel("Number of Trials", fontsize=13)
     ax1[0].legend()
     # Post-onset
+    bins_post = np.arange(-0.1, 1.61, 0.05)
     post_onset_dts = np.hstack(post_onset_dt_hist)
     window_mask = post_onset_dts >= TIME_POST_ONSET
-    ax1[1].hist(post_onset_dts[window_mask], bins=bins, color=colours[1], edgecolor=colours[1],
+    ax1[1].hist(post_onset_dts[window_mask], bins=bins_post, color=colours[0], edgecolor=colours[0],
                 histtype="stepfilled", alpha=0.5, label="Trials Used")
-    ax1[1].hist(post_onset_dts[~window_mask], bins=bins, edgecolor=colours[1], histtype="step", hatch="/",
+    ax1[1].hist(post_onset_dts[~window_mask], bins=bins_post, edgecolor=colours[0], histtype="step", hatch="/",
                 label="Trials Not Used")
     ax1[1].vlines(TIME_POST_ONSET, 0, vline_height, "k", linestyles="--", label=f"Post-Onset Window Length")
     ax1[1].set_xlabel("Time Between Change Onset and End of Trial [seconds]", fontsize=13)
@@ -253,7 +240,8 @@ if __name__ == "__main__":
     ax2.set_ylabel("Fraction of Trials Within Window", fontsize=14)
     plt.show()
     # fig2.savefig(f"../images/plots/trial_fractions_and_tap_error.png", dpi=fig2.dpi, bbox_inches='tight')
-    # fig2.savefig("../images/plots/trial_fractions.png", dpi=fig2.dpi, bbox_inches='tight')
+    # fig2.savefig(f"../images/plots/trial_fractions_pre_{ms_pre:0.0f}_post_{ms_post:0.0f}ms.png",
+    #              dpi=fig2.dpi, bbox_inches='tight')
     plt.close()
 
     # Plot the tap accuracy vs. trial duration
@@ -286,7 +274,7 @@ if __name__ == "__main__":
     plot_ymin = np.min(participant_speeds_avg) - np.max(participant_speeds_sem)
     plot_ymax = np.max(participant_speeds_avg) + np.max(participant_speeds_sem)
     fig4, ax4 = plt.subplots(1, 2, figsize=(14, 6), sharey="row")
-    for i, experiment in enumerate(experiment_labels["Experiments"]):
+    for i, experiment in enumerate(experiment_labels["Experiments"][::-1]):
         for j, change_type in enumerate(experiment_labels["Conditions"]):
             p_colour, p_linestyle = set_plot_colour_linestyle(experiment, change_type)
             avg_speed = participant_speeds_avg[i, j, :]
